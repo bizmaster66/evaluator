@@ -139,7 +139,11 @@ class DriveClient:
         return self.upload_text(folder_id, name, content, "text/markdown")
 
     def get_file_link(self, file_id: str) -> str:
-        resp = self.service.files().get(fileId=file_id, fields="webViewLink").execute()
+        resp = (
+            self.service.files()
+            .get(fileId=file_id, fields="webViewLink", supportsAllDrives=True)
+            .execute()
+        )
         return resp.get("webViewLink", "")
 
     def move_file_to_folder(self, file_id: str, folder_id: str) -> None:
