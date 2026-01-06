@@ -365,28 +365,39 @@ def render_results_list(drive: DriveClient, cache: CacheStore, folder_id: str) -
         st.info("히스토리가 없습니다.")
         return
     st.subheader("결과 목록")
-    results_box = st.container(height=320)
-    with results_box:
-        for entry in sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True):
-            name = entry.get("file_name", "")
-            url = entry.get("report_file_url", "")
-            stamp = entry.get("timestamp", "")
-            logic_score = entry.get("step1", {}).get("logic_score", "")
-            meeting_decision = entry.get("meeting_decision", "")
-            cols = st.columns([6, 2, 2])
-            cols[0].write(f"{stamp} - {name} | logic_score={logic_score} | meeting={meeting_decision}")
-            if cols[1].button("결과보기", key=f"view_{entry.get('file_id','')}"):
-                st.session_state["last_report"] = get_report_text(drive, entry)
-            report_text = get_report_text(drive, entry)
-            cols[2].download_button(
-                label="다운로드",
-                data=report_text or "",
-                file_name=f"{name}.report.md",
-                mime="text/markdown",
-                key=f"dl_{entry.get('file_id','')}",
-            )
-            if url:
-                st.markdown(f"[리포트 열기]({url})")
+    items_sorted = sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True)
+    result_rows = []
+    result_label_map = {}
+    for entry in items_sorted:
+        name = entry.get("file_name", "")
+        entry_id = entry.get("file_id", "")
+        result_rows.append(
+            {
+                "file_name": name,
+                "timestamp": entry.get("timestamp", ""),
+                "logic_score": entry.get("step1", {}).get("logic_score", ""),
+                "meeting_decision": entry.get("meeting_decision", ""),
+                "report_url": entry.get("report_file_url", ""),
+            }
+        )
+        result_label_map[f"{name} [{entry_id[:6]}]"] = entry
+
+    st.dataframe(result_rows, use_container_width=True, height=320)
+    selected_result = st.selectbox("결과 선택", list(result_label_map.keys()))
+    entry = result_label_map.get(selected_result)
+    if entry:
+        cols = st.columns([2, 2, 6])
+        if cols[0].button("결과보기"):
+            st.session_state["last_report"] = get_report_text(drive, entry)
+        report_text = get_report_text(drive, entry)
+        cols[1].download_button(
+            label="다운로드",
+            data=report_text or "",
+            file_name=f"{entry.get('file_name','')}.report.md",
+            mime="text/markdown",
+        )
+        if entry.get("report_file_url"):
+            cols[2].markdown(f"[리포트 열기]({entry['report_file_url']})")
 
     excel_bytes = cache_to_excel_bytes(cache, folder_id)
     st.download_button(
@@ -442,16 +453,16 @@ def main() -> None:
         st.info("폴더를 스캔하면 .md 파일 목록이 나타납니다.")
         return
 
-    selections = {}
-    list_box = st.container(height=260)
-    with list_box:
-        for f in files:
-            status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
-            selections[f["id"]] = st.checkbox(
-                f"{f['name']} ({status})",
-                value=False,
-                key=f"select_{f['id']}",
-            )
+    file_rows = []
+    file_label_map = {}
+    for f in files:
+        status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
+        file_rows.append({"file_id": f["id"], "file_name": f["name"], "status": status})
+        file_label_map[f"{f['name']} [{f['id'][:6]}]"] = f["id"]
+
+    st.dataframe(file_rows, use_container_width=True, height=260)
+    selected_labels = st.multiselect("평가할 파일 선택", list(file_label_map.keys()))
+    selections = {file_label_map[label]: True for label in selected_labels}
 
     force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
 
