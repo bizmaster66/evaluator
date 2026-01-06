@@ -11,6 +11,14 @@ class DriveClient:
     def __init__(self, credentials):
         self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
+    def get_drive_id(self, folder_id: str) -> str | None:
+        meta = (
+            self.service.files()
+            .get(fileId=folder_id, fields="id, driveId", supportsAllDrives=True)
+            .execute()
+        )
+        return meta.get("driveId")
+
     def list_md_files(self, folder_id: str) -> List[Dict[str, Any]]:
         folder_meta = (
             self.service.files()
@@ -47,7 +55,7 @@ class DriveClient:
         return results
 
     def get_file_text(self, file_id: str) -> str:
-        request = self.service.files().get_media(fileId=file_id)
+        request = self.service.files().get_media(fileId=file_id, supportsAllDrives=True)
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
         done = False
@@ -55,22 +63,35 @@ class DriveClient:
             _, done = downloader.next_chunk()
         return fh.getvalue().decode("utf-8", errors="replace")
 
-    def get_or_create_folder(self, name: str, parent_id: Optional[str] = None) -> str:
+    def get_or_create_folder(
+        self,
+        name: str,
+        parent_id: Optional[str] = None,
+        drive_id: Optional[str] = None,
+    ) -> str:
         query = ["trashed = false", "mimeType = 'application/vnd.google-apps.folder'", f"name = '{name}'"]
         if parent_id:
             query.append(f"'{parent_id}' in parents")
-        resp = (
-            self.service.files()
-            .list(q=" and ".join(query), fields="files(id,name)")
-            .execute()
-        )
+        list_kwargs: Dict[str, Any] = {
+            "q": " and ".join(query),
+            "fields": "files(id,name)",
+            "supportsAllDrives": True,
+            "includeItemsFromAllDrives": True,
+        }
+        if drive_id:
+            list_kwargs.update({"corpora": "drive", "driveId": drive_id})
+        resp = self.service.files().list(**list_kwargs).execute()
         files = resp.get("files", [])
         if files:
             return files[0]["id"]
         metadata = {"name": name, "mimeType": "application/vnd.google-apps.folder"}
         if parent_id:
             metadata["parents"] = [parent_id]
-        created = self.service.files().create(body=metadata, fields="id").execute()
+        created = (
+            self.service.files()
+            .create(body=metadata, fields="id", supportsAllDrives=True)
+            .execute()
+        )
         return created["id"]
 
     def find_file_in_folder(self, folder_id: str, name: str, mime_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -79,7 +100,12 @@ class DriveClient:
             query.append(f"mimeType = '{mime_type}'")
         resp = (
             self.service.files()
-            .list(q=" and ".join(query), fields="files(id,name,mimeType)")
+            .list(
+                q=" and ".join(query),
+                fields="files(id,name,mimeType)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
             .execute()
         )
         files = resp.get("files", [])
@@ -97,12 +123,16 @@ class DriveClient:
         if existing:
             updated = (
                 self.service.files()
-                .update(fileId=existing["id"], media_body=media, fields="id")
+                .update(fileId=existing["id"], media_body=media, fields="id", supportsAllDrives=True)
                 .execute()
             )
             return updated["id"]
         body = {"name": name, "parents": [folder_id], "mimeType": mime_type}
-        created = self.service.files().create(body=body, media_body=media, fields="id").execute()
+        created = (
+            self.service.files()
+            .create(body=body, media_body=media, fields="id", supportsAllDrives=True)
+            .execute()
+        )
         return created["id"]
 
     def upload_markdown(self, folder_id: str, name: str, content: str) -> str:

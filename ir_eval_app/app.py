@@ -159,8 +159,10 @@ def compute_cache_key(
 
 
 def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
-    root_id = drive.get_or_create_folder(RESULTS_FOLDER_NAME)
-    return drive.get_or_create_folder(source_folder_id, parent_id=root_id)
+    drive_id = drive.get_drive_id(source_folder_id)
+    root_parent = drive_id if drive_id else None
+    root_id = drive.get_or_create_folder(RESULTS_FOLDER_NAME, parent_id=root_parent, drive_id=drive_id)
+    return drive.get_or_create_folder(source_folder_id, parent_id=root_id, drive_id=drive_id)
 
 
 def compute_final_scores(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> Dict[str, float]:
