@@ -18,6 +18,7 @@ from src.config import (
     MODEL_NAME,
     PROMPT_STEP1_PATH,
     PROMPT_STEP2_PATH,
+    JSON_RESULTS_FOLDER_NAME,
     RESULTS_FOLDER_NAME,
     hash_prompt,
     load_prompt,
@@ -164,6 +165,11 @@ def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
     return drive.get_or_create_folder(RESULTS_FOLDER_NAME, parent_id=source_folder_id, drive_id=drive_id)
 
 
+def ensure_json_folder(drive: DriveClient, results_folder_id: str) -> str:
+    drive_id = drive.get_drive_id(results_folder_id)
+    return drive.get_or_create_folder(JSON_RESULTS_FOLDER_NAME, parent_id=results_folder_id, drive_id=drive_id)
+
+
 def compute_final_scores(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> Dict[str, float]:
     logic_score = float(step1.get("logic_score", 0) or 0)
     if step2:
@@ -227,6 +233,8 @@ def evaluate_file(
                 schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
             ),
         )
+        logic_score = float(step1_json.get("logic_score", 0) or 0)
+        step1_json["pass_gate"] = logic_score >= 80
 
         step2_json: Optional[Dict[str, Any]] = None
         if step1_json.get("pass_gate", False):
@@ -247,12 +255,41 @@ def evaluate_file(
         report_id = _retry(stage="upload_report", func=lambda: drive.upload_markdown(folder_id, report_name, report_md))
         report_url = _retry(stage="upload_report", func=lambda: drive.get_file_link(report_id))
 
+        json_folder_id = ensure_json_folder(drive, folder_id)
+        step1_json_name = f"{file_name}.step1.json"
+        step1_json_id = _retry(
+            stage="upload_report",
+            func=lambda: drive.upload_text(
+                json_folder_id, step1_json_name, json.dumps(step1_json, ensure_ascii=True, indent=2), "application/json"
+            ),
+        )
+        step1_json_url = _retry(stage="upload_report", func=lambda: drive.get_file_link(step1_json_id))
+
+        step2_json_id = ""
+        step2_json_url = ""
+        if step2_json:
+            step2_json_name = f"{file_name}.step2.json"
+            step2_json_id = _retry(
+                stage="upload_report",
+                func=lambda: drive.upload_text(
+                    json_folder_id,
+                    step2_json_name,
+                    json.dumps(step2_json, ensure_ascii=True, indent=2),
+                    "application/json",
+                ),
+            )
+            step2_json_url = _retry(stage="upload_report", func=lambda: drive.get_file_link(step2_json_id))
+
         cache_entry = {
             "file_id": file_id,
             "file_name": file_name,
             "source_folder": folder_id,
             "report_file_id": report_id,
             "report_file_url": report_url,
+            "step1_json_file_id": step1_json_id,
+            "step1_json_file_url": step1_json_url,
+            "step2_json_file_id": step2_json_id,
+            "step2_json_file_url": step2_json_url,
             "timestamp": kst_now(),
             "summary": step1_json.get("one_line_summary", ""),
             "step1": step1_json,
@@ -385,7 +422,7 @@ def render_results_list(drive: DriveClient, cache: CacheStore, folder_id: str) -
     selected_result = st.selectbox("결과 선택", list(result_label_map.keys()))
     entry = result_label_map.get(selected_result)
     if entry:
-        cols = st.columns([2, 2, 6])
+        cols = st.columns([2, 2, 2, 6])
         if cols[0].button("결과보기"):
             st.session_state["last_report"] = get_report_text(drive, entry)
         report_text = get_report_text(drive, entry)
@@ -395,8 +432,17 @@ def render_results_list(drive: DriveClient, cache: CacheStore, folder_id: str) -
             file_name=f"{entry.get('file_name','')}.report.md",
             mime="text/markdown",
         )
+        step1_json_id = entry.get("step1_json_file_id", "")
+        if step1_json_id:
+            step1_json_text = drive.get_file_text(step1_json_id)
+            cols[2].download_button(
+                label="JSON",
+                data=step1_json_text,
+                file_name=f"{entry.get('file_name','')}.step1.json",
+                mime="application/json",
+            )
         if entry.get("report_file_url"):
-            cols[2].markdown(f"[리포트 열기]({entry['report_file_url']})")
+            cols[3].markdown(f"[리포트 열기]({entry['report_file_url']})")
 
     excel_bytes = cache_to_excel_bytes(cache, folder_id)
     st.download_button(
@@ -447,27 +493,35 @@ def main() -> None:
             st.session_state["status_map"] = {f["id"]: STATUS_PENDING for f in st.session_state["files"]}
 
     files = st.session_state.get("files", [])
-    st.subheader("파일 목록")
+    layout = st.columns([5, 5])
+    left = layout[0]
+    right = layout[1]
+
+    with left:
+        st.subheader("파일 목록")
     if not files:
         st.info("폴더를 스캔하면 .md 파일 목록이 나타납니다.")
         return
 
-    file_rows = []
-    file_label_map = {}
-    for f in files:
-        status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
-        file_rows.append({"file_id": f["id"], "file_name": f["name"], "status": status})
-        file_label_map[f"{f['name']} [{f['id'][:6]}]"] = f["id"]
+    with left:
+        file_rows = []
+        file_label_map = {}
+        for f in files:
+            status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
+            file_rows.append({"file_id": f["id"], "file_name": f["name"], "status": status})
+            file_label_map[f"{f['name']} [{f['id'][:6]}]"] = f["id"]
 
-    st.dataframe(file_rows, use_container_width=True, height=260)
-    selected_labels = st.multiselect("평가할 파일 선택", list(file_label_map.keys()))
-    selections = {file_label_map[label]: True for label in selected_labels}
+        st.dataframe(file_rows, use_container_width=True, height=260)
+        selected_labels = st.multiselect("평가할 파일 선택", list(file_label_map.keys()))
+        selections = {file_label_map[label]: True for label in selected_labels}
 
-    force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
+    with left:
+        force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
 
-    evaluate_selected = st.button("선택 평가")
-    evaluate_all = st.button("전체 평가")
-    load_history = st.button("히스토리/캐시 로드")
+        button_cols = st.columns([1, 1, 1])
+        evaluate_selected = button_cols[0].button("선택 평가")
+        evaluate_all = button_cols[1].button("전체 평가")
+        load_history = button_cols[2].button("히스토리/캐시 로드")
 
     rerun_file_id = st.session_state.get("rerun_file_id")
     if rerun_file_id:
@@ -497,8 +551,9 @@ def main() -> None:
         evaluator = Evaluator(api_key=api_key, semaphore=semaphore)
 
         results: List[Dict[str, Any]] = []
-        progress = st.progress(0)
-        progress_text = st.empty()
+        with right:
+            progress = st.progress(0)
+            progress_text = st.empty()
         completed = 0
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -538,7 +593,8 @@ def main() -> None:
             if cache:
                 cache.save()
 
-        st.success("평가 완료")
+        with right:
+            st.success("평가 완료")
         failed = []
         for res in results:
             status = res.get("status")
@@ -548,11 +604,14 @@ def main() -> None:
             if file_id:
                 st.session_state["status_map"][file_id] = status
             if status == STATUS_SKIPPED:
-                st.info(f"캐시 히트: {file_name}")
+                with right:
+                    st.info(f"캐시 히트: {file_name}")
             elif status == STATUS_DONE:
-                st.write(f"평가 완료: {file_name}")
+                with right:
+                    st.write(f"평가 완료: {file_name}")
             else:
-                st.error(f"실패: {file_name}")
+                with right:
+                    st.error(f"실패: {file_name}")
                 if res.get("error"):
                     failed.append(res["error"])
             cache_entry = res.get("cache", {})
@@ -562,15 +621,17 @@ def main() -> None:
                 st.session_state["last_report"] = res["report_md"]
 
         if failed:
-            st.subheader("실패 상세")
-            for item in failed:
-                st.write(
-                    f"{item.get('type')} | {item.get('message')} | "
-                    f"file_id={item.get('file_id')} | file_name={item.get('file_name')}"
-                )
+            with right:
+                st.subheader("실패 상세")
+                for item in failed:
+                    st.write(
+                        f"{item.get('type')} | {item.get('message')} | "
+                        f"file_id={item.get('file_id')} | file_name={item.get('file_name')}"
+                    )
 
         if cache:
-            render_results_list(drive, cache, folder_id)
+            with right:
+                render_results_list(drive, cache, folder_id)
 
     if load_history and folder_id:
         if not cache:
@@ -578,11 +639,13 @@ def main() -> None:
             cache = CacheStore(drive, result_folder_id)
             cache.load()
         if cache:
-            render_results_list(drive, cache, folder_id)
+            with right:
+                render_results_list(drive, cache, folder_id)
 
-    st.subheader("결과 미리보기")
-    if st.session_state.get("last_report"):
-        st.markdown(st.session_state["last_report"])
+    with right:
+        st.subheader("결과 미리보기")
+        if st.session_state.get("last_report"):
+            st.markdown(st.session_state["last_report"])
 
 
 if __name__ == "__main__":

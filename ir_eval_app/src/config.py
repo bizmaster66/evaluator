@@ -7,6 +7,7 @@ from typing import Any
 
 MODEL_NAME = "gemini-2.5-flash"
 RESULTS_FOLDER_NAME = "IR_EVAL_RESULTS"
+JSON_RESULTS_FOLDER_NAME = "JSON_RESULTS"
 CACHE_FILE_NAME = "cache_index.json"
 LOG_SHEET_NAME = "IR_EVAL_LOG"
 
