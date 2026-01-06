@@ -211,6 +211,7 @@ def evaluate_file(
 ) -> Dict[str, Any]:
     file_id = file_meta["id"]
     file_name = file_meta["name"]
+    cache_key = ""
     try:
         modified_time = file_meta.get("modifiedTime", "")
 
@@ -271,6 +272,16 @@ def evaluate_file(
         }
     except Exception as exc:
         err_info = format_error_info(exc, file_id, file_name)
+        fail_entry = {
+            "file_id": file_id,
+            "file_name": file_name,
+            "source_folder": folder_id,
+            "timestamp": kst_now(),
+            "status": STATUS_FAILED,
+            "error": err_info,
+        }
+        if cache_key:
+            cache.set(cache_key, fail_entry)
         return {"status": STATUS_FAILED, "file": file_meta, "error": err_info}
 
 
@@ -340,6 +351,53 @@ def excel_filename(source_folder_id: str) -> str:
     return f"ir_eval_{source_folder_id}_{stamp}.xlsx"
 
 
+def get_report_text(drive: DriveClient, entry: Dict[str, Any]) -> str:
+    if entry.get("report_md"):
+        return entry["report_md"]
+    report_id = entry.get("report_file_id")
+    if report_id:
+        return drive.get_file_text(report_id)
+    return ""
+
+
+def render_results_list(drive: DriveClient, cache: CacheStore, folder_id: str) -> None:
+    items = list(cache.data.get("items", {}).values())
+    if not items:
+        st.info("히스토리가 없습니다.")
+        return
+    st.subheader("결과 목록")
+    results_box = st.container(height=320)
+    with results_box:
+        for entry in sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True):
+            name = entry.get("file_name", "")
+            url = entry.get("report_file_url", "")
+            stamp = entry.get("timestamp", "")
+            logic_score = entry.get("step1", {}).get("logic_score", "")
+            meeting_decision = entry.get("meeting_decision", "")
+            cols = st.columns([6, 2, 2])
+            cols[0].write(f"{stamp} - {name} | logic_score={logic_score} | meeting={meeting_decision}")
+            if cols[1].button("결과보기", key=f"view_{entry.get('file_id','')}"):
+                st.session_state["last_report"] = get_report_text(drive, entry)
+            report_text = get_report_text(drive, entry)
+            cols[2].download_button(
+                label="다운로드",
+                data=report_text or "",
+                file_name=f"{name}.report.md",
+                mime="text/markdown",
+                key=f"dl_{entry.get('file_id','')}",
+            )
+            if url:
+                st.markdown(f"[리포트 열기]({url})")
+
+    excel_bytes = cache_to_excel_bytes(cache, folder_id)
+    st.download_button(
+        label="엑셀 다운로드",
+        data=excel_bytes,
+        file_name=excel_filename(folder_id),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("files", [])
     st.session_state.setdefault("last_report", "")
@@ -363,6 +421,16 @@ def main() -> None:
     init_session_state()
 
     folder_id = st.text_input("Google Drive 폴더 ID")
+    cache = None
+    result_folder_id = ""
+    if folder_id:
+        result_folder_id = ensure_results_folder(drive, folder_id)
+        cache = CacheStore(drive, result_folder_id)
+        cache.load()
+
+    if st.sidebar.button("캐시 새로고침") and folder_id:
+        cache = CacheStore(drive, result_folder_id)
+        cache.load()
 
     if st.button("폴더 스캔") and folder_id:
         with st.spinner("스캔 중..."):
@@ -376,9 +444,15 @@ def main() -> None:
         return
 
     selections = {}
-    for f in files:
-        status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
-        selections[f["id"]] = st.checkbox(f"{f['name']} ({status})", value=False, key=f"select_{f['id']}")
+    list_box = st.container(height=260)
+    with list_box:
+        for f in files:
+            status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
+            selections[f["id"]] = st.checkbox(
+                f"{f['name']} ({status})",
+                value=False,
+                key=f"select_{f['id']}",
+            )
 
     force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
 
@@ -400,9 +474,10 @@ def main() -> None:
             st.warning("평가할 파일을 선택하세요.")
             return
 
-        result_folder_id = ensure_results_folder(drive, folder_id)
-        cache = CacheStore(drive, result_folder_id)
-        cache.load()
+        if not cache:
+            result_folder_id = ensure_results_folder(drive, folder_id)
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
 
         prompt_step1 = load_prompt(PROMPT_STEP1_PATH)
         prompt_step2 = load_prompt(PROMPT_STEP2_PATH)
@@ -413,38 +488,46 @@ def main() -> None:
         evaluator = Evaluator(api_key=api_key, semaphore=semaphore)
 
         results: List[Dict[str, Any]] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = []
-            for f in target_files:
-                st.session_state["status_map"][f["id"]] = STATUS_RUNNING
-                futures.append(
-                    executor.submit(
-                        evaluate_file,
-                        drive,
-                        evaluator,
-                        cache,
-                        result_folder_id,
-                        f,
-                        prompt_step1,
-                        prompt_step2,
-                        step1_hash,
-                        step2_hash,
-                        force_rerun,
+        progress = st.progress(0)
+        progress_text = st.empty()
+        completed = 0
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                futures = []
+                for f in target_files:
+                    st.session_state["status_map"][f["id"]] = STATUS_RUNNING
+                    futures.append(
+                        executor.submit(
+                            evaluate_file,
+                            drive,
+                            evaluator,
+                            cache,
+                            result_folder_id,
+                            f,
+                            prompt_step1,
+                            prompt_step2,
+                            step1_hash,
+                            step2_hash,
+                            force_rerun,
+                        )
                     )
-                )
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    results.append(future.result())
-                except Exception as exc:
-                    results.append(
-                        {
-                            "status": STATUS_FAILED,
-                            "file": {"id": "", "name": ""},
-                            "error": format_error_info(exc, "", ""),
-                        }
-                    )
-
-        cache.save()
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception as exc:
+                        results.append(
+                            {
+                                "status": STATUS_FAILED,
+                                "file": {"id": "", "name": ""},
+                                "error": format_error_info(exc, "", ""),
+                            }
+                        )
+                    completed += 1
+                    progress.progress(completed / len(target_files))
+                    progress_text.write(f"진행: {completed}/{len(target_files)}")
+        finally:
+            if cache:
+                cache.save()
 
         st.success("평가 완료")
         failed = []
@@ -477,41 +560,16 @@ def main() -> None:
                     f"file_id={item.get('file_id')} | file_name={item.get('file_name')}"
                 )
 
-        excel_bytes = cache_to_excel_bytes(cache, folder_id)
-        st.download_button(
-            label="엑셀 다운로드",
-            data=excel_bytes,
-            file_name=excel_filename(folder_id),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        if cache:
+            render_results_list(drive, cache, folder_id)
 
     if load_history and folder_id:
-        result_folder_id = ensure_results_folder(drive, folder_id)
-        cache = CacheStore(drive, result_folder_id)
-        cache.load()
-        items = list(cache.data.get("items", {}).values())
-        if not items:
-            st.info("히스토리가 없습니다.")
-        else:
-            st.subheader("히스토리")
-            for entry in sorted(items, key=lambda x: x.get("timestamp", ""), reverse=True)[:20]:
-                name = entry.get("file_name", "")
-                url = entry.get("report_file_url", "")
-                stamp = entry.get("timestamp", "")
-                st.write(f"{stamp} - {name}")
-                if url:
-                    st.markdown(f"[리포트 열기]({url})")
-                if st.button(f"재실행: {name}", key=f"rerun_{entry.get('file_id','')}"):
-                    st.session_state["rerun_file_id"] = entry.get("file_id", "")
-                    st.experimental_rerun()
-
-            excel_bytes = cache_to_excel_bytes(cache, folder_id)
-            st.download_button(
-                label="엑셀 다운로드",
-                data=excel_bytes,
-                file_name=excel_filename(folder_id),
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        if not cache:
+            result_folder_id = ensure_results_folder(drive, folder_id)
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
+        if cache:
+            render_results_list(drive, cache, folder_id)
 
     st.subheader("결과 미리보기")
     if st.session_state.get("last_report"):
