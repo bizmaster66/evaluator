@@ -113,7 +113,7 @@ def load_credentials() -> service_account.Credentials:
             length = len(s)
             raise RuntimeError(
                 f"Invalid service_account_json JSON in Streamlit secrets "
-                f"(starts_with_{{={starts}}, ends_with_}}={ends}, length={length})"
+                f"(starts_with_{{={starts}}}, ends_with_}}={ends}, length={length})"
             ) from e
     else:
         raise RuntimeError(f"Unsupported service_account_json type: {type(info)}")
