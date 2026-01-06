@@ -173,8 +173,7 @@ def ensure_log_sheet(drive: DriveClient, sheets: SheetsClient, cache: CacheStore
     if existing:
         cache.set_meta("spreadsheet_id", existing["id"])
         return existing["id"]
-    sheet_id = sheets.create_spreadsheet(LOG_SHEET_NAME)
-    drive.move_file_to_folder(sheet_id, folder_id)
+    sheet_id = sheets.create_spreadsheet(LOG_SHEET_NAME, folder_id)
     sheets.ensure_header(sheet_id, SHEET_COLUMNS)
     cache.set_meta("spreadsheet_id", sheet_id)
     return sheet_id
