@@ -12,7 +12,6 @@ from google.oauth2 import service_account
 
 from src.cache_store import CacheStore
 from src.config import (
-    LOG_SHEET_NAME,
     MODEL_NAME,
     PROMPT_STEP1_PATH,
     PROMPT_STEP2_PATH,
@@ -163,19 +162,9 @@ def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
     return drive.get_or_create_folder(source_folder_id, parent_id=root_id)
 
 
-def ensure_log_sheet(drive: DriveClient, sheets: SheetsClient, cache: CacheStore, folder_id: str) -> str:
-    cached_id = cache.get_meta("spreadsheet_id")
-    if cached_id:
-        return cached_id
-    existing = drive.find_file_in_folder(
-        folder_id, LOG_SHEET_NAME, mime_type="application/vnd.google-apps.spreadsheet"
-    )
-    if existing:
-        cache.set_meta("spreadsheet_id", existing["id"])
-        return existing["id"]
-    sheet_id = sheets.create_spreadsheet(LOG_SHEET_NAME, folder_id)
-    sheets.ensure_header(sheet_id, SHEET_COLUMNS)
+def ensure_log_sheet(sheets: SheetsClient, cache: CacheStore, sheet_id: str) -> str:
     cache.set_meta("spreadsheet_id", sheet_id)
+    sheets.ensure_header(sheet_id, SHEET_COLUMNS)
     return sheet_id
 
 
@@ -322,6 +311,7 @@ def main() -> None:
     init_session_state()
 
     folder_id = st.text_input("Google Drive 폴더 ID")
+    sheet_id_input = st.text_input("Log Spreadsheet ID")
 
     if st.button("폴더 스캔") and folder_id:
         with st.spinner("스캔 중..."):
@@ -362,7 +352,14 @@ def main() -> None:
         cache = CacheStore(drive, result_folder_id)
         cache.load()
 
-        sheet_id = ensure_log_sheet(drive, sheets, cache, result_folder_id)
+        cached_sheet_id = cache.get_meta("spreadsheet_id")
+        sheet_id = sheet_id_input.strip() if sheet_id_input else ""
+        if not sheet_id:
+            sheet_id = cached_sheet_id or ""
+        if not sheet_id:
+            st.error("Log Spreadsheet ID를 입력하세요.")
+            return
+        sheet_id = ensure_log_sheet(sheets, cache, sheet_id)
 
         prompt_step1 = load_prompt(PROMPT_STEP1_PATH)
         prompt_step2 = load_prompt(PROMPT_STEP2_PATH)

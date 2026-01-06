@@ -8,16 +8,6 @@ from googleapiclient.discovery import build
 class SheetsClient:
     def __init__(self, credentials):
         self.service = build("sheets", "v4", credentials=credentials, cache_discovery=False)
-        self.drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
-
-    def create_spreadsheet(self, title: str, parent_folder_id: str) -> str:
-        body = {
-            "name": title,
-            "mimeType": "application/vnd.google-apps.spreadsheet",
-            "parents": [parent_folder_id],
-        }
-        created = self.drive.files().create(body=body, fields="id").execute()
-        return created["id"]
 
     def append_rows(self, spreadsheet_id: str, rows: List[List[Any]], sheet_name: str = "Sheet1") -> None:
         body = {"values": rows}
