@@ -161,8 +161,7 @@ def compute_cache_key(
 
 def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
     drive_id = drive.get_drive_id(source_folder_id)
-    root_parent = drive_id if drive_id else None
-    root_id = drive.get_or_create_folder(RESULTS_FOLDER_NAME, parent_id=root_parent, drive_id=drive_id)
+    root_id = drive.get_or_create_folder(RESULTS_FOLDER_NAME, parent_id=source_folder_id, drive_id=drive_id)
     return drive.get_or_create_folder(source_folder_id, parent_id=root_id, drive_id=drive_id)
 
 
