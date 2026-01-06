@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 
@@ -33,7 +33,7 @@ def render_report(
 
         return json.dumps(value, ensure_ascii=True, indent=2)
 
-    now = datetime.now(tz=datetime.UTC).isoformat()
+    now = datetime.now(tz=timezone.utc).isoformat()
     lines = [
         f"# IR Evaluation Report - {file_name}",
         "",
