@@ -12,6 +12,12 @@ class DriveClient:
         self.service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
     def list_md_files(self, folder_id: str) -> List[Dict[str, Any]]:
+        folder_meta = (
+            self.service.files()
+            .get(fileId=folder_id, fields="id, driveId", supportsAllDrives=True)
+            .execute()
+        )
+        drive_id = folder_meta.get("driveId")
         query = (
             f"'{folder_id}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
         )
@@ -21,7 +27,15 @@ class DriveClient:
         while True:
             resp = (
                 self.service.files()
-                .list(q=query, fields=f"nextPageToken,{fields}", pageToken=page_token)
+                .list(
+                    q=query,
+                    fields=f"nextPageToken,{fields}",
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    corpora="drive" if drive_id else "allDrives",
+                    driveId=drive_id,
+                )
                 .execute()
             )
             for f in resp.get("files", []):
