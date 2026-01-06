@@ -4,8 +4,10 @@ import concurrent.futures
 import json
 import threading
 from datetime import datetime
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
+import openpyxl
 import streamlit as st
 from dateutil import tz
 from google.oauth2 import service_account
@@ -24,7 +26,6 @@ from src.config import (
 from src.drive_client import DriveClient
 from src.evaluator import Evaluator
 from src.report_writer import render_report
-from src.sheets_client import SheetsClient, make_row
 from src.utils import hash_cache_key
 
 SCOPES = [
@@ -162,12 +163,6 @@ def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
     return drive.get_or_create_folder(source_folder_id, parent_id=root_id)
 
 
-def ensure_log_sheet(sheets: SheetsClient, cache: CacheStore, sheet_id: str) -> str:
-    cache.set_meta("spreadsheet_id", sheet_id)
-    sheets.ensure_header(sheet_id, SHEET_COLUMNS)
-    return sheet_id
-
-
 def compute_final_scores(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> Dict[str, float]:
     logic_score = float(step1.get("logic_score", 0) or 0)
     if step2:
@@ -270,7 +265,7 @@ def build_sheet_row(cache_entry: Dict[str, Any], source_folder_id: str) -> Dict[
     step1 = cache_entry.get("step1", {})
     final_scores = cache_entry.get("final_scores", {})
     return {
-        "timestamp(KST)": kst_now(),
+        "timestamp(KST)": cache_entry.get("timestamp", kst_now()),
         "file_id": cache_entry.get("file_id", ""),
         "file_name": cache_entry.get("file_name", ""),
         "source_folder": source_folder_id,
@@ -285,6 +280,24 @@ def build_sheet_row(cache_entry: Dict[str, Any], source_folder_id: str) -> Dict[
         "cost_estimate_json": json.dumps(step1.get("cost_estimate", {}), ensure_ascii=True),
         "report_file_url": cache_entry.get("report_file_url", ""),
     }
+
+
+def cache_to_excel_bytes(cache: CacheStore, source_folder_id: str) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "IR_EVAL"
+    ws.append(SHEET_COLUMNS)
+    for entry in cache.data.get("items", {}).values():
+        row = build_sheet_row(entry, source_folder_id)
+        ws.append([row.get(col, "") for col in SHEET_COLUMNS])
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+def excel_filename(source_folder_id: str) -> str:
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    return f"ir_eval_{source_folder_id}_{stamp}.xlsx"
 
 
 def init_session_state() -> None:
@@ -306,12 +319,10 @@ def main() -> None:
         st.stop()
 
     drive = DriveClient(credentials)
-    sheets = SheetsClient(credentials)
 
     init_session_state()
 
     folder_id = st.text_input("Google Drive 폴더 ID")
-    sheet_id_input = st.text_input("Log Spreadsheet ID")
 
     if st.button("폴더 스캔") and folder_id:
         with st.spinner("스캔 중..."):
@@ -326,7 +337,8 @@ def main() -> None:
 
     selections = {}
     for f in files:
-        selections[f["id"]] = st.checkbox(f"{f['name']} ({st.session_state['status_map'].get(f['id'], STATUS_PENDING)})", value=False, key=f"select_{f['id']}")
+        status = st.session_state["status_map"].get(f["id"], STATUS_PENDING)
+        selections[f["id"]] = st.checkbox(f"{f['name']} ({status})", value=False, key=f"select_{f['id']}")
 
     force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
 
@@ -351,15 +363,6 @@ def main() -> None:
         result_folder_id = ensure_results_folder(drive, folder_id)
         cache = CacheStore(drive, result_folder_id)
         cache.load()
-
-        cached_sheet_id = cache.get_meta("spreadsheet_id")
-        sheet_id = sheet_id_input.strip() if sheet_id_input else ""
-        if not sheet_id:
-            sheet_id = cached_sheet_id or ""
-        if not sheet_id:
-            st.error("Log Spreadsheet ID를 입력하세요.")
-            return
-        sheet_id = ensure_log_sheet(sheets, cache, sheet_id)
 
         prompt_step1 = load_prompt(PROMPT_STEP1_PATH)
         prompt_step2 = load_prompt(PROMPT_STEP2_PATH)
@@ -397,14 +400,6 @@ def main() -> None:
 
         cache.save()
 
-        rows = []
-        for res in results:
-            cache_entry = res.get("cache", {})
-            if cache_entry:
-                rows.append(make_row(build_sheet_row(cache_entry, folder_id), SHEET_COLUMNS))
-        if rows:
-            sheets.append_rows(sheet_id, rows)
-
         st.success("평가 완료")
         for res in results:
             status = res.get("status")
@@ -425,6 +420,14 @@ def main() -> None:
             if res.get("report_md"):
                 st.session_state["last_report"] = res["report_md"]
 
+        excel_bytes = cache_to_excel_bytes(cache, folder_id)
+        st.download_button(
+            label="엑셀 다운로드",
+            data=excel_bytes,
+            file_name=excel_filename(folder_id),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
     if load_history and folder_id:
         result_folder_id = ensure_results_folder(drive, folder_id)
         cache = CacheStore(drive, result_folder_id)
@@ -444,6 +447,14 @@ def main() -> None:
                 if st.button(f"재실행: {name}", key=f"rerun_{entry.get('file_id','')}"):
                     st.session_state["rerun_file_id"] = entry.get("file_id", "")
                     st.experimental_rerun()
+
+            excel_bytes = cache_to_excel_bytes(cache, folder_id)
+            st.download_button(
+                label="엑셀 다운로드",
+                data=excel_bytes,
+                file_name=excel_filename(folder_id),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
     st.subheader("결과 미리보기")
     if st.session_state.get("last_report"):
