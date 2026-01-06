@@ -78,16 +78,34 @@ STATUS_FAILED = "실패"
 
 
 def load_credentials() -> service_account.Credentials:
-    info = st.secrets.get("service_account_json")
+    info = None
+    if st.secrets.get("google") and st.secrets["google"].get("service_account_json"):
+        info = st.secrets["google"]["service_account_json"]
+    elif st.secrets.get("service_account_json"):
+        info = st.secrets["service_account_json"]
+    elif st.secrets.get("gcp_service_account"):
+        info = st.secrets["gcp_service_account"]
+
     if not info:
         raise RuntimeError("Missing service_account_json in Streamlit secrets")
+
+    if isinstance(info, str):
+        info = json.loads(info)
+
     return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
 
 def get_api_key() -> str:
-    api_key = st.secrets.get("gemini_api_key")
+    api_key = None
+    if st.secrets.get("gemini") and st.secrets["gemini"].get("api_key"):
+        api_key = st.secrets["gemini"]["api_key"]
+    elif st.secrets.get("gemini_api_key"):
+        api_key = st.secrets["gemini_api_key"]
+    elif st.secrets.get("gemini") and st.secrets["gemini"].get("GEMINI_API_KEY"):
+        api_key = st.secrets["gemini"]["GEMINI_API_KEY"]
+
     if not api_key:
-        raise RuntimeError("Missing gemini_api_key in Streamlit secrets")
+        raise RuntimeError("Missing gemini api key in Streamlit secrets")
     return api_key
 
 
