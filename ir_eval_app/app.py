@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import threading
+import time
 from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, List, Optional
@@ -213,33 +214,39 @@ def evaluate_file(
     try:
         modified_time = file_meta.get("modifiedTime", "")
 
-        content = drive.get_file_text(file_id)
+        content = _retry(stage="download", func=lambda: drive.get_file_text(file_id))
         cache_key = compute_cache_key(file_id, content, modified_time, step1_hash, step2_hash)
         cached = cache.get(cache_key)
         if cached and not force_rerun:
             return {"status": STATUS_SKIPPED, "file": file_meta, "cache": cached}
 
-        step1_json = evaluator.evaluate_step1(
-            content=content,
-            prompt_step1=prompt_step1,
-            schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
+        step1_json = _retry(
+            stage="step1",
+            func=lambda: evaluator.evaluate_step1(
+                content=content,
+                prompt_step1=prompt_step1,
+                schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
+            ),
         )
 
         step2_json: Optional[Dict[str, Any]] = None
         if step1_json.get("pass_gate", False):
-            step2_json = evaluator.evaluate_step2(
-                content=content,
-                prompt_step2=prompt_step2,
-                schema_hint_step2=to_json(STEP2_SCHEMA_HINT),
-                step1_json=step1_json,
+            step2_json = _retry(
+                stage="step2",
+                func=lambda: evaluator.evaluate_step2(
+                    content=content,
+                    prompt_step2=prompt_step2,
+                    schema_hint_step2=to_json(STEP2_SCHEMA_HINT),
+                    step1_json=step1_json,
+                ),
             )
 
         final_scores = compute_final_scores(step1_json, step2_json)
         meeting_decision = derive_meeting_decision(step1_json, final_scores)
         report_md = render_report(file_name, step1_json, step2_json, final_scores, meeting_decision)
         report_name = f"{file_name}.report.md"
-        report_id = drive.upload_markdown(folder_id, report_name, report_md)
-        report_url = drive.get_file_link(report_id)
+        report_id = _retry(stage="upload_report", func=lambda: drive.upload_markdown(folder_id, report_name, report_md))
+        report_url = _retry(stage="upload_report", func=lambda: drive.get_file_link(report_id))
 
         cache_entry = {
             "file_id": file_id,
@@ -254,7 +261,7 @@ def evaluate_file(
             "final_scores": final_scores,
             "meeting_decision": meeting_decision,
         }
-        cache.set(cache_key, cache_entry)
+        _retry(stage="save_cache", func=lambda: cache.set(cache_key, cache_entry))
 
         return {
             "status": STATUS_DONE,
@@ -265,6 +272,23 @@ def evaluate_file(
     except Exception as exc:
         err_info = format_error_info(exc, file_id, file_name)
         return {"status": STATUS_FAILED, "file": file_meta, "error": err_info}
+
+
+def _retry(stage: str, func, retries: int = 2) -> Any:
+    last_exc: Optional[Exception] = None
+    for _ in range(retries + 1):
+        try:
+            return func()
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(0.6)
+    if last_exc:
+        raise wrap_stage_error(stage, last_exc) from last_exc
+    raise RuntimeError("Unknown error")
+
+
+def wrap_stage_error(stage: str, exc: Exception) -> Exception:
+    return RuntimeError(f"stage={stage} | {exc}")
 
 
 def format_error_info(exc: Exception, file_id: str, file_name: str) -> Dict[str, str]:
