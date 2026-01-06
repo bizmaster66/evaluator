@@ -78,28 +78,54 @@ STATUS_FAILED = "실패"
 
 
 def load_credentials() -> service_account.Credentials:
-    info = None
-    if st.secrets.get("google") and st.secrets["google"].get("service_account_json"):
-        info = st.secrets["google"]["service_account_json"]
-    elif st.secrets.get("service_account_json"):
-        info = st.secrets["service_account_json"]
-    elif st.secrets.get("gcp_service_account"):
-        info = st.secrets["gcp_service_account"]
+    import json
+    import streamlit as st
+    from google.oauth2 import service_account
 
-    if not info:
+    # 1) Preferred sectioned secrets
+    info = None
+    if "google" in st.secrets and "service_account_json" in st.secrets["google"]:
+        info = st.secrets["google"]["service_account_json"]
+    # 2) Legacy top-level
+    elif "service_account_json" in st.secrets:
+        info = st.secrets["service_account_json"]
+    # 3) Legacy dict fields
+    elif "gcp_service_account" in st.secrets:
+        info = dict(st.secrets["gcp_service_account"])
+
+    if info is None:
         raise RuntimeError("Missing service_account_json in Streamlit secrets")
 
-    if isinstance(info, str):
-        raw = info.strip()
+    # dict -> use directly
+    if isinstance(info, dict):
+        sa_info = info
+    elif isinstance(info, str):
+        s = info.strip()
+        # remove one extra wrapping quote layer if present
+        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+            s = s[1:-1].strip()
         try:
-            info = json.loads(raw)
-        except json.JSONDecodeError:
-            try:
-                info = json.loads(raw.replace("\n", "\\n"))
-            except json.JSONDecodeError as exc:
-                raise RuntimeError("Invalid service_account_json JSON in Streamlit secrets") from exc
+            sa_info = json.loads(s)
+        except Exception as e:
+            # safe diagnostics (no secret leak)
+            starts = s.lstrip().startswith("{")
+            ends = s.rstrip().endswith("}")
+            length = len(s)
+            raise RuntimeError(
+                f"Invalid service_account_json JSON in Streamlit secrets "
+                f"(starts_with_{{={starts}}, ends_with_}}={ends}, length={length})"
+            ) from e
+    else:
+        raise RuntimeError(f"Unsupported service_account_json type: {type(info)}")
 
-    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    creds = service_account.Credentials.from_service_account_info(
+        sa_info,
+        scopes=[
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/spreadsheets",
+        ],
+    )
+    return creds
 
 
 def get_api_key() -> str:
