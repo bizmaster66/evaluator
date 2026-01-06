@@ -210,56 +210,70 @@ def evaluate_file(
 ) -> Dict[str, Any]:
     file_id = file_meta["id"]
     file_name = file_meta["name"]
-    modified_time = file_meta.get("modifiedTime", "")
+    try:
+        modified_time = file_meta.get("modifiedTime", "")
 
-    content = drive.get_file_text(file_id)
-    cache_key = compute_cache_key(file_id, content, modified_time, step1_hash, step2_hash)
-    cached = cache.get(cache_key)
-    if cached and not force_rerun:
-        return {"status": STATUS_SKIPPED, "file": file_meta, "cache": cached}
+        content = drive.get_file_text(file_id)
+        cache_key = compute_cache_key(file_id, content, modified_time, step1_hash, step2_hash)
+        cached = cache.get(cache_key)
+        if cached and not force_rerun:
+            return {"status": STATUS_SKIPPED, "file": file_meta, "cache": cached}
 
-    step1_json = evaluator.evaluate_step1(
-        content=content,
-        prompt_step1=prompt_step1,
-        schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
-    )
-
-    step2_json: Optional[Dict[str, Any]] = None
-    if step1_json.get("pass_gate", False):
-        step2_json = evaluator.evaluate_step2(
+        step1_json = evaluator.evaluate_step1(
             content=content,
-            prompt_step2=prompt_step2,
-            schema_hint_step2=to_json(STEP2_SCHEMA_HINT),
-            step1_json=step1_json,
+            prompt_step1=prompt_step1,
+            schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
         )
 
-    final_scores = compute_final_scores(step1_json, step2_json)
-    meeting_decision = derive_meeting_decision(step1_json, final_scores)
-    report_md = render_report(file_name, step1_json, step2_json, final_scores, meeting_decision)
-    report_name = f"{file_name}.report.md"
-    report_id = drive.upload_markdown(folder_id, report_name, report_md)
-    report_url = drive.get_file_link(report_id)
+        step2_json: Optional[Dict[str, Any]] = None
+        if step1_json.get("pass_gate", False):
+            step2_json = evaluator.evaluate_step2(
+                content=content,
+                prompt_step2=prompt_step2,
+                schema_hint_step2=to_json(STEP2_SCHEMA_HINT),
+                step1_json=step1_json,
+            )
 
-    cache_entry = {
+        final_scores = compute_final_scores(step1_json, step2_json)
+        meeting_decision = derive_meeting_decision(step1_json, final_scores)
+        report_md = render_report(file_name, step1_json, step2_json, final_scores, meeting_decision)
+        report_name = f"{file_name}.report.md"
+        report_id = drive.upload_markdown(folder_id, report_name, report_md)
+        report_url = drive.get_file_link(report_id)
+
+        cache_entry = {
+            "file_id": file_id,
+            "file_name": file_name,
+            "source_folder": folder_id,
+            "report_file_id": report_id,
+            "report_file_url": report_url,
+            "timestamp": kst_now(),
+            "summary": step1_json.get("one_line_summary", ""),
+            "step1": step1_json,
+            "step2": step2_json,
+            "final_scores": final_scores,
+            "meeting_decision": meeting_decision,
+        }
+        cache.set(cache_key, cache_entry)
+
+        return {
+            "status": STATUS_DONE,
+            "file": file_meta,
+            "cache": cache_entry,
+            "report_md": report_md,
+        }
+    except Exception as exc:
+        err_info = format_error_info(exc, file_id, file_name)
+        return {"status": STATUS_FAILED, "file": file_meta, "error": err_info}
+
+
+def format_error_info(exc: Exception, file_id: str, file_name: str) -> Dict[str, str]:
+    message = str(exc).replace("\n", " ")[:300]
+    return {
+        "type": exc.__class__.__name__,
+        "message": message,
         "file_id": file_id,
         "file_name": file_name,
-        "source_folder": folder_id,
-        "report_file_id": report_id,
-        "report_file_url": report_url,
-        "timestamp": kst_now(),
-        "summary": step1_json.get("one_line_summary", ""),
-        "step1": step1_json,
-        "step2": step2_json,
-        "final_scores": final_scores,
-        "meeting_decision": meeting_decision,
-    }
-    cache.set(cache_key, cache_entry)
-
-    return {
-        "status": STATUS_DONE,
-        "file": file_meta,
-        "cache": cache_entry,
-        "report_md": report_md,
     }
 
 
@@ -298,7 +312,7 @@ def cache_to_excel_bytes(cache: CacheStore, source_folder_id: str) -> bytes:
 
 
 def excel_filename(source_folder_id: str) -> str:
-    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    stamp = datetime.now(tz=tz.UTC).strftime("%Y%m%d_%H%M")
     return f"ir_eval_{source_folder_id}_{stamp}.xlsx"
 
 
@@ -397,12 +411,19 @@ def main() -> None:
             for future in concurrent.futures.as_completed(futures):
                 try:
                     results.append(future.result())
-                except Exception:
-                    results.append({"status": STATUS_FAILED, "file": {"id": "", "name": ""}})
+                except Exception as exc:
+                    results.append(
+                        {
+                            "status": STATUS_FAILED,
+                            "file": {"id": "", "name": ""},
+                            "error": format_error_info(exc, "", ""),
+                        }
+                    )
 
         cache.save()
 
         st.success("평가 완료")
+        failed = []
         for res in results:
             status = res.get("status")
             file_meta = res.get("file", {})
@@ -416,11 +437,21 @@ def main() -> None:
                 st.write(f"평가 완료: {file_name}")
             else:
                 st.error(f"실패: {file_name}")
+                if res.get("error"):
+                    failed.append(res["error"])
             cache_entry = res.get("cache", {})
             if cache_entry.get("report_file_url"):
                 st.markdown(f"[리포트 열기]({cache_entry['report_file_url']})")
             if res.get("report_md"):
                 st.session_state["last_report"] = res["report_md"]
+
+        if failed:
+            st.subheader("실패 상세")
+            for item in failed:
+                st.write(
+                    f"{item.get('type')} | {item.get('message')} | "
+                    f"file_id={item.get('file_id')} | file_name={item.get('file_name')}"
+                )
 
         excel_bytes = cache_to_excel_bytes(cache, folder_id)
         st.download_button(

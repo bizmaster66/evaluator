@@ -33,7 +33,7 @@ def render_report(
 
         return json.dumps(value, ensure_ascii=True, indent=2)
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(tz=datetime.UTC).isoformat()
     lines = [
         f"# IR Evaluation Report - {file_name}",
         "",
