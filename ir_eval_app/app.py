@@ -90,7 +90,14 @@ def load_credentials() -> service_account.Credentials:
         raise RuntimeError("Missing service_account_json in Streamlit secrets")
 
     if isinstance(info, str):
-        info = json.loads(info)
+        raw = info.strip()
+        try:
+            info = json.loads(raw)
+        except json.JSONDecodeError:
+            try:
+                info = json.loads(raw.replace("\n", "\\n"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Invalid service_account_json JSON in Streamlit secrets") from exc
 
     return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
