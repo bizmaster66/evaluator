@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import re
 import threading
 import time
 from datetime import datetime
@@ -25,6 +26,11 @@ STEP1_SCHEMA_HINT = {
     "overall_summary": "string (종합 평가 요약)",
     "logic_score": "number 0-100",
     "pass_gate": "boolean (logic_score >= 80)",
+    "perspective_scores": {
+        "critical": "number 0-100",
+        "neutral": "number 0-100",
+        "positive": "number 0-100",
+    },
     "item_evaluations": {
         "문제정의": {"score": "number 0-10", "comment": "string", "feedback": "string"},
         "솔루션&제품": {"score": "number 0-10", "comment": "string", "feedback": "string"},
@@ -98,7 +104,13 @@ PROMPT_APPENDIX = (
     "3) item_evaluations에 각 항목별 score(0-10), comment, feedback을 포함한다.\n"
     "4) strengths/weaknesses는 투자자 관점에서 엄격하게 작성한다.\n"
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\n"
-    "6) item_evaluations의 comment+feedback 합산 100자 내외(80~120자)로 작성한다.\n"
+    "6) item_evaluations의 comment는 3~4문장, feedback은 2~3문장으로 작성하고 "
+    "가능하면 근거(숫자/지표/사실)를 함께 명시한다.\n"
+    "7) perspective_scores에 critical/neutral/positive 점수를 각각 부여한다. "
+    "critical은 매우 보수적 관점, neutral은 중립 관점, positive는 긍정 관점이다.\n"
+    "8) 점수 산정은 논리성과 근거 수준에 따라 보수적으로 부여하되, "
+    "관점별 차이가 드러나도록 작성한다. 점수를 동일하게 반복하지 말고, "
+    "동일할 경우 그 이유를 step1 JSON의 overall_summary에 짧게 설명한다.\n"
 )
 
 BASE_PROMPT = """# ROLE (FIXED)
@@ -295,6 +307,21 @@ def compute_perspective_scores(step1: Dict[str, Any], step2: Optional[Dict[str, 
     }
 
 
+def normalize_perspective_scores(raw: Any) -> Dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    scores: Dict[str, int] = {}
+    for key in ("critical", "neutral", "positive"):
+        value = raw.get(key)
+        try:
+            score = int(round(float(value)))
+        except (TypeError, ValueError):
+            continue
+        score = max(0, min(92, score))
+        scores[key] = score
+    return scores
+
+
 def recommendation_for(score: int) -> str:
     if score >= 80:
         return "추천"
@@ -346,7 +373,9 @@ def evaluate_one(
             step1_json=step1_json,
         )
 
-    scores = compute_perspective_scores(step1_json, step2_json)
+    ai_scores = normalize_perspective_scores(step1_json.get("perspective_scores"))
+    computed_scores = compute_perspective_scores(step1_json, step2_json)
+    scores = {**computed_scores, **ai_scores}
     recommendations = derive_recommendations(scores)
     final_verdict = recommendations.get("critical", "보류")
     report_md = render_report(
@@ -500,9 +529,10 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
             cols[j].markdown(f"**Title : {key}**")
             cols[j].write(comment or "(코멘트 없음)")
             cols[j].write(feedback or "(피드백 없음)")
-            total_len = len((comment + feedback).strip())
-            if total_len < 80 or total_len > 120:
-                cols[j].caption("권장 분량: 80~120자")
+            text = f"{comment} {feedback}".strip()
+            sentences = [s for s in re.split(r"[.!?]\s+", text) if s.strip()]
+            if len(sentences) < 4:
+                cols[j].caption("권장 분량: comment 3~4문장, feedback 2~3문장")
 
 
 def init_session_state() -> None:
@@ -582,6 +612,15 @@ def main() -> None:
     selected_ids = set(st.session_state.get("selected_file_ids", []))
     cache = st.session_state.get("cache", {})
     cache_by_name = {entry.get("file_name", ""): entry for entry in cache.values()}
+    status_map = st.session_state.get("status_map", {})
+    for f in files:
+        entry = cache_by_name.get(f.name)
+        if not entry:
+            continue
+        cached_status = entry.get("status", STATUS_DONE)
+        if status_map.get(f.name) != cached_status:
+            status_map[f.name] = cached_status
+    st.session_state["status_map"] = status_map
 
     filtered_files = []
     for f in files:
@@ -658,6 +697,7 @@ def main() -> None:
             return
 
         results: List[Dict[str, Any]] = []
+        failures: List[Dict[str, str]] = []
         progress = st.progress(0)
         progress_text = st.empty()
         completed = 0
@@ -675,12 +715,17 @@ def main() -> None:
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(run_file, f) for f in target_files]
-            for future in concurrent.futures.as_completed(futures):
+            future_to_file = {executor.submit(run_file, f): f for f in target_files}
+            for future in concurrent.futures.as_completed(future_to_file):
+                file_obj = future_to_file[future]
                 try:
                     results.append(future.result())
                 except Exception as exc:
-                    results.append({"status": STATUS_FAILED, "error": format_error_info(exc, "")})
+                    error_info = format_error_info(exc, file_obj.name)
+                    results.append(
+                        {"status": STATUS_FAILED, "error": error_info, "file_name": file_obj.name}
+                    )
+                    failures.append(error_info)
                 completed += 1
                 progress.progress(completed / len(target_files))
                 progress_text.write(f"진행: {completed}/{len(target_files)}")
@@ -692,7 +737,16 @@ def main() -> None:
             elif res.get("status") == STATUS_SKIPPED:
                 st.session_state["status_map"][file_name] = STATUS_SKIPPED
             else:
-                st.session_state["status_map"][file_name] = STATUS_FAILED
+                if file_name:
+                    st.session_state["status_map"][file_name] = STATUS_FAILED
+
+        if failures:
+            st.error(
+                "\n".join(
+                    f"{f['file_name']} | {f['type']} | {f['message']}" for f in failures
+                )
+            )
+        st.rerun()
 
     if load_history:
         st.info("세션 캐시 기준으로 히스토리를 표시합니다.")
