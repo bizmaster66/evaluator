@@ -118,7 +118,7 @@ PROMPT_APPENDIX = (
     "3) item_evaluations에 각 항목별 score(0-10), comment, feedback을 포함한다.\\n"
     "4) strengths/weaknesses는 투자자 관점에서 엄격하게 작성한다.\\n"
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\\n"
-    "6) item_evaluations의 comment/feedback은 각 항목별로 200자 이상 작성한다.\\n"
+    "6) item_evaluations의 comment+feedback 합산 100자 내외(80~120자)로 작성한다.\\n"
 )
 
 
@@ -623,6 +623,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("last_report", "")
     st.session_state.setdefault("status_map", {})
     st.session_state.setdefault("rerun_file_id", "")
+    st.session_state.setdefault("page", 1)
 
 
 def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
@@ -810,9 +811,13 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
         cols = st.columns(2)
         for j, key in enumerate(ITEM_KEYS[i : i + 2]):
             value = item_evaluations.get(key, {})
-            text = f"{value.get('comment','')} {value.get('feedback','')}".strip()
+            comment = value.get("comment", "")
+            feedback = value.get("feedback", "")
             cols[j].markdown(f"**Title : {key}**")
-            cols[j].write(text or "(없음)")
+            cols[j].write(comment or "(코멘트 없음)")
+            cols[j].write(feedback or "(피드백 없음)")
+            if len((comment + feedback).strip()) < 80 or len((comment + feedback).strip()) > 120:
+                cols[j].caption("권장 분량: 80~120자")
             if len(value.get("comment", "")) < 200 or len(value.get("feedback", "")) < 200:
                 short_items.append(key)
     if short_items:
@@ -896,63 +901,66 @@ def main() -> None:
             cache_items[entry.get("file_id", "")] = entry
 
     selected_ids = set(st.session_state.get("selected_file_ids", []))
-    table_rows = []
+    filtered_files = []
     for f in files:
         entry = cache_items.get(f["id"])
         company_name = entry.get("step1", {}).get("company_name", "") if entry else ""
-        scores = entry.get("perspective_scores", {}) if entry else {}
         if search_term:
             term = search_term.strip().lower()
             if term not in f["name"].lower() and term not in company_name.lower():
                 continue
-        table_rows.append(
-            {
-                "파일명": f["name"],
-                "진행": status_badge(st.session_state["status_map"].get(f["id"], STATUS_PENDING)),
-                "선택": f["id"] in selected_ids,
-                "기업명": company_name,
-                "critical": scores.get("critical", ""),
-                "neutral": scores.get("neutral", ""),
-                "positive": scores.get("positive", ""),
-                "미리보기": "보기",
-                "파일열기": "열기",
-                "file_id": f["id"],
-            }
+        filtered_files.append(f)
+
+    page_size = 10
+    total_pages = max(1, (len(filtered_files) + page_size - 1) // page_size)
+    page = min(st.session_state.get("page", 1), total_pages)
+    pager_cols = st.columns([1, 1, 2, 1, 1], gap="small")
+    if pager_cols[0].button("이전"):
+        page = max(1, page - 1)
+    pager_cols[2].markdown(f"페이지 {page}/{total_pages}")
+    if pager_cols[4].button("다음"):
+        page = min(total_pages, page + 1)
+    st.session_state["page"] = page
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    for f in filtered_files[start:end]:
+        entry = cache_items.get(f["id"])
+        company_name = entry.get("step1", {}).get("company_name", "") if entry else ""
+        scores = entry.get("perspective_scores", {}) if entry else {}
+
+        row = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1], gap="small")
+        row[0].write(f["name"])
+        row[1].write(status_badge(st.session_state["status_map"].get(f["id"], STATUS_PENDING)))
+        checked = row[2].checkbox(
+            "",
+            value=f["id"] in selected_ids,
+            key=f"select_{f['id']}",
         )
+        if checked:
+            selected_ids.add(f["id"])
+        else:
+            selected_ids.discard(f["id"])
+        row[3].write(company_name)
+        row[4].write(scores.get("critical", ""))
+        row[5].write(scores.get("neutral", ""))
+        row[6].write(scores.get("positive", ""))
+        if row[7].button("보기", key=f"preview_{f['id']}") and entry:
+            st.session_state["selected_file_id"] = f["id"]
+            st.session_state["selected_file_name"] = f["name"]
+            st.session_state["last_report"] = get_report_text(drive, entry)
+        report_url = entry.get("report_file_url") if entry else ""
+        if report_url:
+            row[8].markdown(f"[파일열기]({report_url})")
+        else:
+            row[8].write("-")
 
-    table_df = table_rows[:]
-    edited = st.data_editor(
-        table_df,
-        use_container_width=True,
-        height=360,
-        disabled=["파일명", "진행", "기업명", "critical", "neutral", "positive", "미리보기", "파일열기", "file_id"],
-        hide_index=True,
-    )
-
-    selected_ids = set()
-    edited_rows = edited.to_dict("records") if hasattr(edited, "to_dict") else edited
-    for row in edited_rows:
-        if row.get("선택") and row.get("file_id"):
-            selected_ids.add(row["file_id"])
     st.session_state["selected_file_ids"] = list(selected_ids)
 
     action_cols = st.columns([6, 1, 1, 1], gap="small")
     evaluate_selected = action_cols[1].button("선택 평가")
     evaluate_all = action_cols[2].button("전체 평가")
     load_history = action_cols[3].button("히스토리")
-
-    preview_options = {row["파일명"]: row["file_id"] for row in edited_rows if row.get("file_id")}
-    if preview_options:
-        preview_name = st.selectbox("미리보기 선택", list(preview_options.keys()))
-        preview_id = preview_options.get(preview_name, "")
-        preview_entry = cache_items.get(preview_id)
-        preview_cols = st.columns([1, 1, 3], gap="small")
-        if preview_cols[0].button("미리보기") and preview_entry:
-            st.session_state["selected_file_id"] = preview_id
-            st.session_state["selected_file_name"] = preview_name
-            st.session_state["last_report"] = get_report_text(drive, preview_entry)
-        if preview_entry and preview_entry.get("report_file_url"):
-            preview_cols[1].markdown(f"[파일열기]({preview_entry['report_file_url']})")
 
     rerun_file_id = st.session_state.get("rerun_file_id")
     if rerun_file_id:
