@@ -49,6 +49,8 @@ STEP1_SCHEMA_HINT = {
 }
 
 STEP2_SCHEMA_HINT = {
+    "stage_label": "string (Seed/Pre-Seed/Series A/Series B+/Unknown)",
+    "industry_label": "string (SaaS/Commerce/Bio-Healthcare/DeepTech/Other)",
     "stage_score": "number 0-10",
     "industry_score": "number 0-10",
     "bm_score": "number 0-10",
@@ -106,11 +108,11 @@ PROMPT_APPENDIX = (
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\n"
     "6) item_evaluations의 comment는 3~4문장, feedback은 2~3문장으로 작성하고 "
     "가능하면 근거(숫자/지표/사실)를 함께 명시한다.\n"
-    "7) perspective_scores에 critical/neutral/positive 점수를 각각 부여한다. "
-    "critical은 매우 보수적 관점, neutral은 중립 관점, positive는 긍정 관점이다.\n"
+    "7) Step2에는 stage_label과 industry_label을 포함한다. "
+    "stage_label은 Seed/Pre-Seed/Series A/Series B+/Unknown 중 하나를 사용한다. "
+    "industry_label은 SaaS/Commerce/Bio-Healthcare/DeepTech/Other 중 하나를 사용한다.\n"
     "8) 점수 산정은 논리성과 근거 수준에 따라 보수적으로 부여하되, "
-    "관점별 차이가 드러나도록 작성한다. 점수를 동일하게 반복하지 말고, "
-    "동일할 경우 그 이유를 step1 JSON의 overall_summary에 짧게 설명한다.\n"
+    "관점별 차이가 드러나도록 작성한다.\n"
 )
 
 BASE_PROMPT = """# ROLE (FIXED)
@@ -288,6 +290,137 @@ def cache_key_for(content: str, step1_hash: str, step2_hash: str) -> str:
     return hashlib.sha256("::".join(parts).encode("utf-8")).hexdigest()
 
 
+DEFAULT_WEIGHTS = {
+    "문제정의": 0.125,
+    "솔루션&제품": 0.125,
+    "시장규모&분석": 0.125,
+    "비즈니스모델": 0.125,
+    "경쟁분석": 0.125,
+    "성장전략": 0.125,
+    "주요 인력&팀": 0.125,
+    "재무계획": 0.125,
+}
+
+STAGE_WEIGHTS = {
+    "Seed": {
+        "문제정의": 0.18,
+        "솔루션&제품": 0.18,
+        "시장규모&분석": 0.12,
+        "비즈니스모델": 0.10,
+        "경쟁분석": 0.08,
+        "성장전략": 0.10,
+        "주요 인력&팀": 0.16,
+        "재무계획": 0.08,
+    },
+    "Pre-Seed": {
+        "문제정의": 0.19,
+        "솔루션&제품": 0.18,
+        "시장규모&분석": 0.12,
+        "비즈니스모델": 0.08,
+        "경쟁분석": 0.08,
+        "성장전략": 0.10,
+        "주요 인력&팀": 0.17,
+        "재무계획": 0.08,
+    },
+    "Series A": {
+        "문제정의": 0.10,
+        "솔루션&제품": 0.12,
+        "시장규모&분석": 0.18,
+        "비즈니스모델": 0.16,
+        "경쟁분석": 0.10,
+        "성장전략": 0.16,
+        "주요 인력&팀": 0.10,
+        "재무계획": 0.08,
+    },
+    "Series B+": {
+        "문제정의": 0.08,
+        "솔루션&제품": 0.10,
+        "시장규모&분석": 0.14,
+        "비즈니스모델": 0.20,
+        "경쟁분석": 0.14,
+        "성장전략": 0.16,
+        "주요 인력&팀": 0.08,
+        "재무계획": 0.10,
+    },
+}
+
+INDUSTRY_WEIGHTS = {
+    "SaaS": {
+        "문제정의": 0.10,
+        "솔루션&제품": 0.12,
+        "시장규모&분석": 0.18,
+        "비즈니스모델": 0.18,
+        "경쟁분석": 0.14,
+        "성장전략": 0.14,
+        "주요 인력&팀": 0.08,
+        "재무계획": 0.06,
+    },
+    "Commerce": {
+        "문제정의": 0.10,
+        "솔루션&제품": 0.10,
+        "시장규모&분석": 0.18,
+        "비즈니스모델": 0.20,
+        "경쟁분석": 0.12,
+        "성장전략": 0.16,
+        "주요 인력&팀": 0.08,
+        "재무계획": 0.06,
+    },
+    "Bio-Healthcare": {
+        "문제정의": 0.16,
+        "솔루션&제품": 0.18,
+        "시장규모&분석": 0.12,
+        "비즈니스모델": 0.10,
+        "경쟁분석": 0.10,
+        "성장전략": 0.10,
+        "주요 인력&팀": 0.14,
+        "재무계획": 0.10,
+    },
+    "DeepTech": {
+        "문제정의": 0.14,
+        "솔루션&제품": 0.20,
+        "시장규모&분석": 0.12,
+        "비즈니스모델": 0.10,
+        "경쟁분석": 0.12,
+        "성장전략": 0.10,
+        "주요 인력&팀": 0.14,
+        "재무계획": 0.08,
+    },
+}
+
+
+def _normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    total = sum(weights.values()) or 1.0
+    return {k: v / total for k, v in weights.items()}
+
+
+def _combine_weights(stage_label: str, industry_label: str) -> Dict[str, float]:
+    stage_weights = STAGE_WEIGHTS.get(stage_label, DEFAULT_WEIGHTS)
+    industry_weights = INDUSTRY_WEIGHTS.get(industry_label, DEFAULT_WEIGHTS)
+    combined = {}
+    for key in ITEM_KEYS:
+        combined[key] = (DEFAULT_WEIGHTS[key] + stage_weights[key] + industry_weights[key]) / 3.0
+    return _normalize_weights(combined)
+
+
+def _weighted_item_score(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> float:
+    items = step1.get("item_evaluations", {}) if isinstance(step1, dict) else {}
+    stage_label = ""
+    industry_label = ""
+    if step2 and isinstance(step2, dict):
+        stage_label = str(step2.get("stage_label", "") or "")
+        industry_label = str(step2.get("industry_label", "") or "")
+    weights = _combine_weights(stage_label, industry_label)
+    total = 0.0
+    for key in ITEM_KEYS:
+        item = items.get(key, {})
+        try:
+            score = float(item.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        total += score * weights[key]
+    return max(0.0, min(10.0, total)) * 10.0
+
+
 def compute_perspective_scores(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> Dict[str, int]:
     logic_score = float(step1.get("logic_score", 0) or 0)
     if step2:
@@ -297,29 +430,16 @@ def compute_perspective_scores(step1: Dict[str, Any], step2: Optional[Dict[str, 
         normalized_step2 = (stage + industry + bm) / 30.0 * 100.0
     else:
         normalized_step2 = 0.0
-    critical = 0.8 * logic_score + 0.2 * normalized_step2
-    neutral = 0.7 * logic_score + 0.3 * normalized_step2
-    positive = 0.6 * logic_score + 0.4 * normalized_step2
+    weighted_items = _weighted_item_score(step1, step2)
+    base = 0.5 * logic_score + 0.3 * weighted_items + 0.2 * normalized_step2
+    critical = base - 6
+    neutral = base
+    positive = base + 6
     return {
-        "critical": min(92, int(round(critical))),
-        "neutral": min(92, int(round(neutral))),
-        "positive": min(92, int(round(positive))),
+        "critical": min(92, int(round(max(0, critical)))),
+        "neutral": min(92, int(round(max(0, neutral)))),
+        "positive": min(92, int(round(max(0, positive)))),
     }
-
-
-def normalize_perspective_scores(raw: Any) -> Dict[str, int]:
-    if not isinstance(raw, dict):
-        return {}
-    scores: Dict[str, int] = {}
-    for key in ("critical", "neutral", "positive"):
-        value = raw.get(key)
-        try:
-            score = int(round(float(value)))
-        except (TypeError, ValueError):
-            continue
-        score = max(0, min(92, score))
-        scores[key] = score
-    return scores
 
 
 def recommendation_for(score: int) -> str:
@@ -373,9 +493,7 @@ def evaluate_one(
             step1_json=step1_json,
         )
 
-    ai_scores = normalize_perspective_scores(step1_json.get("perspective_scores"))
-    computed_scores = compute_perspective_scores(step1_json, step2_json)
-    scores = {**computed_scores, **ai_scores}
+    scores = compute_perspective_scores(step1_json, step2_json)
     recommendations = derive_recommendations(scores)
     final_verdict = recommendations.get("critical", "보류")
     report_md = render_report(

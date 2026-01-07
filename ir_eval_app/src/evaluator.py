@@ -55,7 +55,10 @@ class Evaluator:
             response = self.client.models.generate_content(
                 model=MODEL_NAME,
                 contents=prompt,
-                config={"response_mime_type": "application/json"},
+                config={
+                    "response_mime_type": "application/json",
+                    "temperature": 0,
+                },
             )
         return response.text or "{}"
 
