@@ -634,6 +634,17 @@ def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
         [data-testid="stSidebar"] > div:first-child {
             width: 30% !important;
         }
+        .main .block-container {
+            max-width: 100% !important;
+            padding-left: 2rem;
+            padding-right: 2rem;
+        }
+        html, body, [data-testid="stAppViewContainer"] {
+            overflow-y: auto;
+        }
+        [data-testid="stAppViewContainer"] > .main {
+            overflow: visible;
+        }
         </style>
         """,
         unsafe_allow_html=True,
