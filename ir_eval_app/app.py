@@ -430,9 +430,9 @@ def compute_perspective_scores(step1: Dict[str, Any], step2: Optional[Dict[str, 
         normalized_step2 = (stage + industry + bm) / 30.0 * 100.0
     else:
         normalized_step2 = 0.0
-    critical = 0.7 * logic_score + 0.3 * normalized_step2
-    neutral = 0.6 * logic_score + 0.4 * normalized_step2
-    positive = 0.5 * logic_score + 0.5 * normalized_step2
+    critical = 0.8 * logic_score + 0.2 * normalized_step2
+    neutral = 0.7 * logic_score + 0.3 * normalized_step2
+    positive = 0.6 * logic_score + 0.4 * normalized_step2
     return {
         "critical": min(92, int(round(critical))),
         "neutral": min(92, int(round(neutral))),
