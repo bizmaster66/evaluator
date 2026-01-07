@@ -625,30 +625,6 @@ def init_session_state() -> None:
 
 
 def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] {
-            width: 30% !important;
-        }
-        [data-testid="stSidebar"] > div:first-child {
-            width: 30% !important;
-        }
-        .main .block-container {
-            max-width: 100% !important;
-            padding-left: 2rem;
-            padding-right: 2rem;
-        }
-        html, body, [data-testid="stAppViewContainer"] {
-            overflow-y: auto;
-        }
-        [data-testid="stAppViewContainer"] > .main {
-            overflow: visible;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.sidebar.header("#사이드바")
     folder_input = st.sidebar.text_input("Google drive 폴더 ID", value=st.session_state.get("folder_id", ""))
     folder_id = normalize_folder_id(folder_input)
@@ -682,7 +658,7 @@ def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
         with checkbox_box:
             for label in labels:
                 checked = st.checkbox(
-                    label,
+                    short_text(label, 36),
                     value=file_map[label] in selected_ids,
                     key=f"select_{file_map[label]}",
                 )
@@ -851,8 +827,21 @@ def main() -> None:
 
     init_session_state()
 
-    ui = render_sidebar(drive)
-    folder_id = ui["folder_id"]
+    st.title("Title : IR 분석 & 평가")
+
+    top_cols = st.columns([4, 1, 1, 1, 1])
+    folder_input = top_cols[0].text_input(
+        "Google drive 폴더 ID",
+        value=st.session_state.get("folder_id", ""),
+        placeholder="폴더 ID 또는 URL",
+    )
+    folder_id = normalize_folder_id(folder_input)
+    st.session_state["folder_id"] = folder_id
+
+    scan_clicked = top_cols[1].button("문서 스캔")
+    force_rerun = top_cols[2].checkbox("캐시 무시(재평가)", value=False)
+    refresh_clicked = top_cols[3].button("캐시 새로고침")
+    delete_cache_clicked = top_cols[4].button("캐시 삭제")
     cache = None
     result_folder_id = ""
     if folder_id:
@@ -860,18 +849,18 @@ def main() -> None:
         cache = CacheStore(drive, result_folder_id)
         cache.load()
 
-    if st.session_state.pop("cache_reload", False) and folder_id:
+    if refresh_clicked and folder_id:
         cache = CacheStore(drive, result_folder_id)
         cache.load()
 
-    if st.session_state.pop("cache_delete", False) and folder_id:
+    if delete_cache_clicked and folder_id:
         existing = drive.find_file_in_folder(result_folder_id, "cache_index.json", mime_type="application/json")
         if existing:
             drive.service.files().delete(fileId=existing["id"], supportsAllDrives=True).execute()
         cache = CacheStore(drive, result_folder_id)
         cache.load()
 
-    if ui["scan_clicked"] and folder_id:
+    if scan_clicked and folder_id:
         with st.spinner("스캔 중..."):
             st.session_state["files"] = drive.list_md_files(folder_id)
             st.session_state["status_map"] = {f["id"]: STATUS_PENDING for f in st.session_state["files"]}
@@ -881,14 +870,80 @@ def main() -> None:
         st.info("폴더를 스캔하면 .md 파일 목록이 나타납니다.")
         return
 
-    render_main_header(cache, folder_id)
-    render_report_table(drive, cache)
+    table_header = st.columns([3, 1])
+    table_header[0].subheader("파일 목록 & IR List")
+    if cache:
+        excel_bytes = cache_to_excel_bytes(cache, folder_id)
+        table_header[1].download_button(
+            label="엑셀 다운로드",
+            data=excel_bytes,
+            file_name=excel_filename(folder_id),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    else:
+        table_header[1].button("엑셀 다운로드", disabled=True)
+
+    search_term = st.text_input("검색(파일명/기업명)", value="")
+    cache_items = {}
+    if cache:
+        for entry in cache.data.get("items", {}).values():
+            cache_items[entry.get("file_id", "")] = entry
+
+    header_cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1])
+    header_cols[0].markdown("**파일명**")
+    header_cols[1].markdown("**진행**")
+    header_cols[2].markdown("**선택**")
+    header_cols[3].markdown("**기업명**")
+    header_cols[4].markdown("**critical**")
+    header_cols[5].markdown("**neutral**")
+    header_cols[6].markdown("**positive**")
+    header_cols[7].markdown("**미리보기**")
+    header_cols[8].markdown("**파일열기**")
+
+    selected_ids = set(st.session_state.get("selected_file_ids", []))
+    for f in files:
+        entry = cache_items.get(f["id"])
+        company_name = entry.get("step1", {}).get("company_name", "") if entry else ""
+        scores = entry.get("perspective_scores", {}) if entry else {}
+        if search_term:
+            term = search_term.strip().lower()
+            if term not in f["name"].lower() and term not in company_name.lower():
+                continue
+
+        row = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1])
+        row[0].write(f["name"])
+        row[1].write(status_badge(st.session_state["status_map"].get(f["id"], STATUS_PENDING)))
+        checked = row[2].checkbox(
+            "",
+            value=f["id"] in selected_ids,
+            key=f"select_{f['id']}",
+        )
+        if checked:
+            selected_ids.add(f["id"])
+        else:
+            selected_ids.discard(f["id"])
+        row[3].write(company_name)
+        row[4].write(scores.get("critical", ""))
+        row[5].write(scores.get("neutral", ""))
+        row[6].write(scores.get("positive", ""))
+        if row[7].button("보기", key=f"preview_{f['id']}") and entry:
+            st.session_state["selected_file_id"] = f["id"]
+            st.session_state["selected_file_name"] = f["name"]
+            st.session_state["last_report"] = get_report_text(drive, entry)
+        report_url = entry.get("report_file_url") if entry else ""
+        if report_url:
+            row[8].markdown(f"[파일열기]({report_url})")
+        else:
+            row[8].write("-")
+
+    st.session_state["selected_file_ids"] = list(selected_ids)
+
+    action_cols = st.columns([6, 1, 1, 1])
+    evaluate_selected = action_cols[1].button("선택 평가")
+    evaluate_all = action_cols[2].button("전체 평가")
+    load_history = action_cols[3].button("히스토리")
 
     rerun_file_id = st.session_state.get("rerun_file_id")
-    evaluate_selected = ui["evaluate_selected"]
-    evaluate_all = ui["evaluate_all"]
-    load_history = ui["load_history"]
-    force_rerun = ui["force_rerun"]
     if rerun_file_id:
         evaluate_selected = True
         force_rerun = True
@@ -980,12 +1035,8 @@ def main() -> None:
                     f"file_id={item.get('file_id')} | file_name={item.get('file_name')}"
                 )
 
-        if cache:
-            render_report_table(drive, cache)
-
     if load_history and folder_id:
-        if cache:
-            render_report_table(drive, cache)
+        pass
 
     selected_entry = find_selected_entry(cache)
     render_preview_panel(selected_entry)
