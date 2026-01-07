@@ -118,6 +118,7 @@ PROMPT_APPENDIX = (
     "3) item_evaluations에 각 항목별 score(0-10), comment, feedback을 포함한다.\\n"
     "4) strengths/weaknesses는 투자자 관점에서 엄격하게 작성한다.\\n"
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\\n"
+    "6) item_evaluations의 comment/feedback은 각 항목별로 200자 이상 작성한다.\\n"
 )
 
 
@@ -793,7 +794,7 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
         f"Neutral : {scores.get('neutral','')}   "
         f"Positive : {scores.get('positive','')}"
     )
-    st.markdown(short_text(step1.get("one_line_summary", "")))
+    st.markdown(step1.get("one_line_summary", ""))
 
     st.markdown("### Title : 종합 평가")
     st.info(step1.get("overall_summary", "(없음)"))
@@ -804,13 +805,18 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
         return
 
     st.markdown("### 항목별 평가")
+    short_items = []
     for i in range(0, len(ITEM_KEYS), 2):
         cols = st.columns(2)
         for j, key in enumerate(ITEM_KEYS[i : i + 2]):
             value = item_evaluations.get(key, {})
             text = f"{value.get('comment','')} {value.get('feedback','')}".strip()
             cols[j].markdown(f"**Title : {key}**")
-            cols[j].write(short_text(text, 180))
+            cols[j].write(text or "(없음)")
+            if len(value.get("comment", "")) < 200 or len(value.get("feedback", "")) < 200:
+                short_items.append(key)
+    if short_items:
+        st.warning(f"200자 미만 항목: {', '.join(short_items)}")
 
 
 def main() -> None:
@@ -829,7 +835,7 @@ def main() -> None:
 
     st.title("Title : IR 분석 & 평가")
 
-    top_cols = st.columns([4, 1, 1, 1, 1])
+    top_cols = st.columns([4, 1, 1, 1, 1], gap="small")
     folder_input = top_cols[0].text_input(
         "Google drive 폴더 ID",
         value=st.session_state.get("folder_id", ""),
@@ -870,7 +876,7 @@ def main() -> None:
         st.info("폴더를 스캔하면 .md 파일 목록이 나타납니다.")
         return
 
-    table_header = st.columns([3, 1])
+    table_header = st.columns([3, 1], gap="small")
     table_header[0].subheader("파일 목록 & IR List")
     if cache:
         excel_bytes = cache_to_excel_bytes(cache, folder_id)
@@ -889,18 +895,8 @@ def main() -> None:
         for entry in cache.data.get("items", {}).values():
             cache_items[entry.get("file_id", "")] = entry
 
-    header_cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1])
-    header_cols[0].markdown("**파일명**")
-    header_cols[1].markdown("**진행**")
-    header_cols[2].markdown("**선택**")
-    header_cols[3].markdown("**기업명**")
-    header_cols[4].markdown("**critical**")
-    header_cols[5].markdown("**neutral**")
-    header_cols[6].markdown("**positive**")
-    header_cols[7].markdown("**미리보기**")
-    header_cols[8].markdown("**파일열기**")
-
     selected_ids = set(st.session_state.get("selected_file_ids", []))
+    table_rows = []
     for f in files:
         entry = cache_items.get(f["id"])
         company_name = entry.get("step1", {}).get("company_name", "") if entry else ""
@@ -909,39 +905,54 @@ def main() -> None:
             term = search_term.strip().lower()
             if term not in f["name"].lower() and term not in company_name.lower():
                 continue
-
-        row = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1])
-        row[0].write(f["name"])
-        row[1].write(status_badge(st.session_state["status_map"].get(f["id"], STATUS_PENDING)))
-        checked = row[2].checkbox(
-            "",
-            value=f["id"] in selected_ids,
-            key=f"select_{f['id']}",
+        table_rows.append(
+            {
+                "파일명": f["name"],
+                "진행": status_badge(st.session_state["status_map"].get(f["id"], STATUS_PENDING)),
+                "선택": f["id"] in selected_ids,
+                "기업명": company_name,
+                "critical": scores.get("critical", ""),
+                "neutral": scores.get("neutral", ""),
+                "positive": scores.get("positive", ""),
+                "미리보기": "보기",
+                "파일열기": "열기",
+                "file_id": f["id"],
+            }
         )
-        if checked:
-            selected_ids.add(f["id"])
-        else:
-            selected_ids.discard(f["id"])
-        row[3].write(company_name)
-        row[4].write(scores.get("critical", ""))
-        row[5].write(scores.get("neutral", ""))
-        row[6].write(scores.get("positive", ""))
-        if row[7].button("보기", key=f"preview_{f['id']}") and entry:
-            st.session_state["selected_file_id"] = f["id"]
-            st.session_state["selected_file_name"] = f["name"]
-            st.session_state["last_report"] = get_report_text(drive, entry)
-        report_url = entry.get("report_file_url") if entry else ""
-        if report_url:
-            row[8].markdown(f"[파일열기]({report_url})")
-        else:
-            row[8].write("-")
 
+    table_df = table_rows[:]
+    edited = st.data_editor(
+        table_df,
+        use_container_width=True,
+        height=360,
+        disabled=["파일명", "진행", "기업명", "critical", "neutral", "positive", "미리보기", "파일열기", "file_id"],
+        hide_index=True,
+    )
+
+    selected_ids = set()
+    edited_rows = edited.to_dict("records") if hasattr(edited, "to_dict") else edited
+    for row in edited_rows:
+        if row.get("선택") and row.get("file_id"):
+            selected_ids.add(row["file_id"])
     st.session_state["selected_file_ids"] = list(selected_ids)
 
-    action_cols = st.columns([6, 1, 1, 1])
+    action_cols = st.columns([6, 1, 1, 1], gap="small")
     evaluate_selected = action_cols[1].button("선택 평가")
     evaluate_all = action_cols[2].button("전체 평가")
     load_history = action_cols[3].button("히스토리")
+
+    preview_options = {row["파일명"]: row["file_id"] for row in edited_rows if row.get("file_id")}
+    if preview_options:
+        preview_name = st.selectbox("미리보기 선택", list(preview_options.keys()))
+        preview_id = preview_options.get(preview_name, "")
+        preview_entry = cache_items.get(preview_id)
+        preview_cols = st.columns([1, 1, 3], gap="small")
+        if preview_cols[0].button("미리보기") and preview_entry:
+            st.session_state["selected_file_id"] = preview_id
+            st.session_state["selected_file_name"] = preview_name
+            st.session_state["last_report"] = get_report_text(drive, preview_entry)
+        if preview_entry and preview_entry.get("report_file_url"):
+            preview_cols[1].markdown(f"[파일열기]({preview_entry['report_file_url']})")
 
     rerun_file_id = st.session_state.get("rerun_file_id")
     if rerun_file_id:
