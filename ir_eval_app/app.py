@@ -625,14 +625,28 @@ def init_session_state() -> None:
 
 
 def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebar"] {
+            width: 30% !important;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            width: 30% !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.sidebar.header("#사이드바")
     folder_input = st.sidebar.text_input("Google drive 폴더 ID", value=st.session_state.get("folder_id", ""))
     folder_id = normalize_folder_id(folder_input)
     st.session_state["folder_id"] = folder_id
 
-    scan_clicked = st.sidebar.button("폴더 스캔")
-    refresh_clicked = st.sidebar.button("캐시 새로고침")
-    delete_cache_clicked = st.sidebar.button("캐시 삭제")
+    action_cols = st.sidebar.columns([1, 1, 1])
+    scan_clicked = action_cols[0].button("폴더 스캔")
+    refresh_clicked = action_cols[1].button("캐시 새로고침")
+    delete_cache_clicked = action_cols[2].button("캐시 삭제")
     if refresh_clicked and folder_id:
         st.session_state["cache_reload"] = True
     if delete_cache_clicked and folder_id:
@@ -650,12 +664,20 @@ def render_sidebar(drive: DriveClient) -> Dict[str, Any]:
 
     if file_map:
         labels = list(file_map.keys())
-        selected_labels = st.sidebar.multiselect(
-            "평가 대상 선택",
-            labels,
-            default=[label for label in labels if file_map[label] in st.session_state.get("selected_file_ids", [])],
-        )
-        st.session_state["selected_file_ids"] = [file_map[label] for label in selected_labels]
+        st.sidebar.markdown("평가 대상 선택")
+        selected_ids = set(st.session_state.get("selected_file_ids", []))
+        checkbox_box = st.sidebar.container()
+        new_selected_ids = []
+        with checkbox_box:
+            for label in labels:
+                checked = st.checkbox(
+                    label,
+                    value=file_map[label] in selected_ids,
+                    key=f"select_{file_map[label]}",
+                )
+                if checked:
+                    new_selected_ids.append(file_map[label])
+        st.session_state["selected_file_ids"] = new_selected_ids
 
         default_index = 0
         current_id = st.session_state.get("selected_file_id")
