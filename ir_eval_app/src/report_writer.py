@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional
 
 
@@ -43,66 +43,94 @@ def _fmt_score_table(scores: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _fmt_item_evaluations(items: Dict[str, Any]) -> str:
+    if not isinstance(items, dict) or not items:
+        return "(없음)"
+    lines = ["| 항목 | 점수 | 평가 | 피드백 |", "|---|---|---|---|"]
+    for key, value in items.items():
+        if isinstance(value, dict):
+            score = value.get("score", "")
+            comment = value.get("comment", "")
+            feedback = value.get("feedback", "")
+        else:
+            score = ""
+            comment = ""
+            feedback = ""
+        lines.append(f"| {key} | {score} | {comment} | {feedback} |")
+    return "\n".join(lines)
+
+
+def _extract_company_name(file_name: str, step1: Dict[str, Any]) -> str:
+    if step1.get("company_name"):
+        return str(step1.get("company_name"))
+    return "기업명 미상"
+
+
 def render_report(
     file_name: str,
     step1: Dict[str, Any],
     step2: Optional[Dict[str, Any]],
-    final_scores: Dict[str, Any],
-    meeting_decision: str,
+    perspective_scores: Dict[str, Any],
+    recommendations: Dict[str, Any],
+    final_verdict: str,
 ) -> str:
+    company_name = _extract_company_name(file_name, step1)
     one_line = _get(step1, "one_line_summary", "")
+    overall_summary = _get(step1, "overall_summary", "")
     logic_score = _get(step1, "logic_score", "")
     pass_gate = _get(step1, "pass_gate", "")
-    step1_item_scores = _get(step1, "item_scores", {})
-    step1_strengths = _get(step1, "strengths", {})
-    step1_weaknesses = _get(step1, "weaknesses", {})
-    step1_red_flags = _get(step1, "red_flags", [])
+    item_evaluations = _get(step1, "item_evaluations", {})
+    strengths = _get(step1, "strengths", {})
+    weaknesses = _get(step1, "weaknesses", {})
+    red_flags = _get(step1, "red_flags", [])
 
     stage_score = _get(step2, "stage_score", "") if step2 else ""
     industry_score = _get(step2, "industry_score", "") if step2 else ""
     bm_score = _get(step2, "bm_score", "") if step2 else ""
     axis_comments = _get(step2, "axis_comments", {}) if step2 else {}
     validation_questions = _get(step2, "validation_questions", {}) if step2 else {}
-    now = datetime.now(tz=timezone.utc).isoformat()
-    lines = [
-        f"# IR Evaluation Report - {file_name}",
-        "",
-        f"Generated: {now} UTC",
-        "",
-        "## Summary",
-        f"- One-line: {one_line}",
-        f"- Step1 logic_score: {logic_score} / pass_gate: {pass_gate}",
-        f"- Final score (conservative/neutral/optimistic): {final_scores}",
-        f"- Meeting decision: {meeting_decision}",
-        "",
-        "## Step1 Item Scores",
-        _fmt_score_table(step1_item_scores),
-        "",
-        "## Step1 Strengths (Investor View)",
-        _fmt_grouped_list(step1_strengths),
-        "",
-        "## Step1 Weaknesses (Investor View)",
-        _fmt_grouped_list(step1_weaknesses),
-        "",
-        "## Step1 Red Flags",
-        _fmt_list(_as_list(step1_red_flags)),
-    ]
 
-    if step2:
-        lines.extend(
-            [
-                "",
-                "## Step2 Axis Scores",
-                f"- stage/industry/BM: {stage_score} / {industry_score} / {bm_score}",
-                "",
-                "## Axis Comments",
-                _fmt_grouped_list(axis_comments),
-                "",
-                "## Validation Questions",
-                _fmt_grouped_list(validation_questions),
-            ]
-        )
-    else:
-        lines.extend(["", "## Step2", "Skipped due to pass_gate=false."])
+    kst = timezone(timedelta(hours=9))
+    now = datetime.now(tz=kst).strftime("%y.%m.%d")
+
+    lines = [
+        f"# {company_name} 분석 결과 {now}",
+        "",
+        f"기업설명: {one_line}",
+        "",
+        "## 평가 점수",
+        "| 관점 | 점수 | 추천여부 |",
+        "|---|---|---|",
+        f"| Critical | {perspective_scores.get('critical', '')} | {recommendations.get('critical', '')} |",
+        f"| Neutral | {perspective_scores.get('neutral', '')} | {recommendations.get('neutral', '')} |",
+        f"| Positive | {perspective_scores.get('positive', '')} | {recommendations.get('positive', '')} |",
+        "",
+        f"- Step1 logic_score: {logic_score} / pass_gate: {pass_gate}",
+        f"- Step2 axis score (stage/industry/BM): {stage_score} / {industry_score} / {bm_score}",
+        "",
+        "## 종합 평가",
+        overall_summary or "(없음)",
+        "",
+        "## 항목별 평가",
+        _fmt_item_evaluations(item_evaluations),
+        "",
+        "## 핵심 강점",
+        _fmt_grouped_list(strengths),
+        "",
+        "## 핵심 취약점",
+        _fmt_grouped_list(weaknesses),
+        "",
+        "## Red Flags",
+        _fmt_list(_as_list(red_flags)),
+        "",
+        "## 산업/단계/BM 코멘트",
+        _fmt_grouped_list(axis_comments),
+        "",
+        "## 검증 질문",
+        _fmt_grouped_list(validation_questions),
+        "",
+        "## Final Verdict",
+        final_verdict or "(없음)",
+    ]
 
     return "\n".join(lines)
