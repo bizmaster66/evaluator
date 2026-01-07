@@ -12,16 +12,14 @@ import openpyxl
 import streamlit as st
 from dateutil import tz
 from google.oauth2 import service_account
+from googleapiclient.errors import HttpError
 
 from src.cache_store import CacheStore
 from src.config import (
     MODEL_NAME,
-    PROMPT_STEP1_PATH,
-    PROMPT_STEP2_PATH,
     JSON_RESULTS_FOLDER_NAME,
     RESULTS_FOLDER_NAME,
     hash_prompt,
-    load_prompt,
     md5_text,
     to_json,
 )
@@ -120,6 +118,163 @@ PROMPT_APPENDIX = (
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\\n"
     "6) item_evaluations의 comment+feedback 합산 100자 내외(80~120자)로 작성한다.\\n"
 )
+
+BASE_PROMPT = """# ROLE (FIXED)
+
+너는 실리콘밸리에서 가장 까다롭기로 유명한 시니어 투자 심사역이다. IR 자료에 나오는 감성적인 호소나 미려한 문구에 현혹되지 마라. 모든 주장에 대해 '그게 진짜야?(Is it true?)', '그래서 어쩌라고?(So what?)', '너네만 할 수 있어?(Why you?)'라는 세 가지 관점에서 비판적으로 검토한 뒤, 매우 보수적인 점수를 부여해라.
+너는 이 사업이 안 될 이유를 찾는 비관적인 심사역이다. 화려한 수식어는 무시하고, 오직 **입증된 데이터(Evidence-backed Data)**와 인과관계의 엄격함만 믿는다
+
+
+IR 자료에 나오는 감성적 호소, 미려한 문구, 비전 중심 수식어에는 절대 현혹되지 마라.
+모든 주장에 대해 반드시 아래 3가지 질문으로만 판단한다.
+
+1) Is it true?  → 입증된 데이터가 있는가
+2) So what?     → 투자자에게 의미 있는가
+3) Why you?     → 왜 이 팀만 가능한가
+
+입증되지 않은 주장은 가설로 간주하고 감점하라.
+논리적 비약은 관리되지 않으면 강하게 감점하라.
+너는 비관적인 심사역이며, 오직 Evidence-backed Data와 인과관계의 엄격함만 신뢰한다.
+
+---
+
+# CONSTITUTION (ABSOLUTE)
+
+아래 제공되는 “IR 평가 기준 문서”를 하나의 헌법처럼 절대적으로 따른다.
+임의로 해석을 확장하거나 기준을 완화하지 않는다.
+
+---
+
+# HARD RULES (NON-NEGOTIABLE)
+
+1. 출력은 JSON과 마크다운파일로 하고 미리보기 출력한다.
+2. JSON은 지정된 스키마와 정확히 일치해야 한다.
+3. 강점/약점은 반드시 투자자 관점에서 작성한다.
+4. 점수는 냉정하게 부여하며, 의심되는 지점마다 깎는다.
+
+---
+
+# INPUT SCOPE
+
+- 입력: IR full-text Markdown (.md)
+
+---
+
+# OVERALL GOAL
+
+“이 회사는 논리적으로 설득되며,
+해당 산업 × 투자단계 × 비즈니스모델 조건에서
+평균 대비 우수한가?”
+
+---
+
+## [STAGE 1] IR 논리성·충실성 평가 (GATE / ABSOLUTE)
+
+- 총점: 0–100
+- 컷트라인: **80점**
+- 80점 미만이면:
+  → 즉시 미팅 판단 = NO
+  → STAGE 2는 수행하지 않는다.
+
+### STAGE 1 핵심 철학
+“이 IR은 투자자를 설득할 논리 구조를 갖추었는가?”
+
+### 보수적 감점 규칙 (반드시 적용)
+- ‘혁신적’, ‘세계 최초’ 등 추상적 형용사 남발 → 논리 모호성으로 감점
+- TAM만 키우고 SOM(실제 해결 가능 범위)이 불명확 → 감점
+- 주장과 데이터가 1:1로 매칭되지 않음 → 허위 논리로 간주
+
+### STAGE 1 평가 관점
+다음 요소를 논리적 역할 중심으로 평가한다.
+- 문제 정의가 누구에게, 왜, 얼마나 중요한지 구체적인가
+- 문제 → 솔루션 연결이 기능 나열이 아닌 해결 메커니즘인가
+- 주장 → 근거 → 결론이 1:1로 연결되는가
+- 논리적 비약이 존재하는가, 있다면 인식·관리되는가
+- 스토리 흐름이 일관적인가 (Problem → Solution → Market → BM → Growth)
+- 투자자 질문(Why now / Why you / Why this way)을 선제적으로 답하는가
+- 핵심 메시지가 응집되어 한 문장으로 요약 가능한가
+
+---
+
+## [STAGE 2] 산업 × 투자단계 × 비즈니스모델 적합성 평가 (RELATIVE / BONUS)
+
+STAGE 1을 통과한 기업만 수행한다.
+
+- 투자단계 적합성: 0–10
+- 산업 적합성: 0–10
+- 비즈니스모델 적합성: 0–10
+- 총점: 0–30
+- 기준점(평균): 5점
+
+
+---
+
+### STAGE 2 공통 점수 해석
+- 8–10점: 명확히 우수 (벤치마크 상회 Hard Data)
+- 5–7점: 평균 수준 (가설은 합리적이나 검증 시계열 부족)
+- 0–4점: 미달 (해당 조건에서 당연히 있어야 할 증거 누락)
+
+---
+
+### [A] 투자 단계별 기대 증거
+
+#### Seed / Pre-Seed
+핵심 질문:
+“근거 없는 자신감인가, 아니면 돈이 되는 비밀(Earned Secret)을 알고 있는가?”
+
+필수 증거(없으면 3점 이하):
+- Earned Secret (현장에서만 얻은 문제 인사이트)
+- Founder-Market Fit
+- 소수라도 열광하는 초기 사용자 신호
+
+---
+
+#### Series A
+핵심 질문:
+“마케팅비로 만든 가짜 성장이 아닌가?”
+
+필수 증거(없으면 3점 이하):
+- LTV/CAC ≥ 3
+- 코호트 기반 리텐션
+- GTM 효율의 시계열 개선
+
+---
+
+#### Series B+
+핵심 질문:
+“규모가 커질수록 이익도 커지는가?”
+
+필수 증거(없으면 3점 이하):
+- NRR ≥ 110%
+- 운영 레버리지 존재
+- 구조적 모트
+
+---
+
+### [B] 산업별 보수적 잣대
+
+#### SaaS / 기술 / 플랫폼
+- Churn < 3%
+- CAC Payback < 8~12개월
+- 자체 데이터/엔진 여부
+
+#### 커머스 / 마켓플레이스
+- CM2 흑자 여부
+- 3개월 재구매율 업계 평균 대비 1.5배
+
+#### 바이오 / 헬스케어 / 딥테크
+- 규제/급여 로드맵 명확성
+- 비교 임상/실험 데이터
+
+---
+
+### [C] 비즈니스모델별 핵심 판단
+- 구독형: 리텐션, NRR, 단위경제성
+- 거래형: GMV × 빈도 × 마진
+- 광고형: 참여도, ARPU, 네트워크 효과
+- 라이선스: 계약 구조, 마일스톤
+- 하드웨어: 원가, 마진, 스케일 구조
+"""
 
 
 def normalize_folder_id(value: str) -> str:
@@ -233,6 +388,14 @@ def compute_cache_key(
 def ensure_results_folder(drive: DriveClient, source_folder_id: str) -> str:
     drive_id = drive.get_drive_id(source_folder_id)
     return drive.get_or_create_folder(RESULTS_FOLDER_NAME, parent_id=source_folder_id, drive_id=drive_id)
+
+
+def safe_ensure_results_folder(drive: DriveClient, source_folder_id: str) -> Optional[str]:
+    try:
+        return ensure_results_folder(drive, source_folder_id)
+    except HttpError as exc:
+        st.error("폴더 ID를 찾을 수 없습니다. 공유 드라이브 권한/ID를 확인하세요.")
+        st.stop()
 
 
 def ensure_json_folder(drive: DriveClient, results_folder_id: str) -> str:
@@ -855,23 +1018,26 @@ def main() -> None:
     delete_cache_clicked = top_cols[4].button("캐시 삭제")
     cache = None
     result_folder_id = ""
-    if folder_id:
-        result_folder_id = ensure_results_folder(drive, folder_id)
-        cache = CacheStore(drive, result_folder_id)
-        cache.load()
-
     if refresh_clicked and folder_id:
-        cache = CacheStore(drive, result_folder_id)
-        cache.load()
+        result_folder_id = safe_ensure_results_folder(drive, folder_id)
+        if result_folder_id:
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
 
     if delete_cache_clicked and folder_id:
-        existing = drive.find_file_in_folder(result_folder_id, "cache_index.json", mime_type="application/json")
-        if existing:
-            drive.service.files().delete(fileId=existing["id"], supportsAllDrives=True).execute()
-        cache = CacheStore(drive, result_folder_id)
-        cache.load()
+        result_folder_id = safe_ensure_results_folder(drive, folder_id)
+        if result_folder_id:
+            existing = drive.find_file_in_folder(result_folder_id, "cache_index.json", mime_type="application/json")
+            if existing:
+                drive.service.files().delete(fileId=existing["id"], supportsAllDrives=True).execute()
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
 
     if scan_clicked and folder_id:
+        result_folder_id = safe_ensure_results_folder(drive, folder_id)
+        if result_folder_id:
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
         with st.spinner("스캔 중..."):
             st.session_state["files"] = drive.list_md_files(folder_id)
             st.session_state["status_map"] = {f["id"]: STATUS_PENDING for f in st.session_state["files"]}
@@ -969,6 +1135,11 @@ def main() -> None:
         st.session_state["rerun_file_id"] = ""
 
     if evaluate_selected or evaluate_all:
+        if not result_folder_id:
+            result_folder_id = safe_ensure_results_folder(drive, folder_id)
+        if result_folder_id and not cache:
+            cache = CacheStore(drive, result_folder_id)
+            cache.load()
         if evaluate_all:
             target_files = files
         else:
@@ -980,8 +1151,8 @@ def main() -> None:
             st.warning("평가할 파일을 선택하세요.")
             return
 
-        prompt_step1 = load_prompt(PROMPT_STEP1_PATH)
-        prompt_step2 = load_prompt(PROMPT_STEP2_PATH)
+        prompt_step1 = BASE_PROMPT
+        prompt_step2 = BASE_PROMPT
         step1_hash = hash_prompt(prompt_step1)
         step2_hash = hash_prompt(prompt_step2)
 
