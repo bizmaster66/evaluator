@@ -465,6 +465,46 @@ def status_badge(status: str) -> str:
     return mapping.get(status, status or "-")
 
 
+def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
+    st.subheader("미리보기")
+    if not entry:
+        st.info("선택된 리포트가 없습니다.")
+        return
+
+    step1 = entry.get("step1", {})
+    scores = entry.get("perspective_scores", {})
+    company_name = step1.get("company_name") or "기업명 미상"
+    st.markdown(
+        f"#리포트 제목 : {company_name}  \n"
+        f"Critical : {scores.get('critical','')}   "
+        f"Neutral : {scores.get('neutral','')}   "
+        f"Positive : {scores.get('positive','')}"
+    )
+    st.markdown(step1.get("one_line_summary", ""))
+
+    st.markdown("### Title : 종합 평가")
+    st.info(step1.get("overall_summary", "(없음)"))
+
+    item_evaluations = step1.get("item_evaluations", {})
+    if not item_evaluations:
+        st.info("항목별 평가가 없습니다.")
+        return
+
+    st.markdown("### 항목별 평가")
+    for i in range(0, len(ITEM_KEYS), 2):
+        cols = st.columns(2)
+        for j, key in enumerate(ITEM_KEYS[i : i + 2]):
+            value = item_evaluations.get(key, {})
+            comment = value.get("comment", "")
+            feedback = value.get("feedback", "")
+            cols[j].markdown(f"**Title : {key}**")
+            cols[j].write(comment or "(코멘트 없음)")
+            cols[j].write(feedback or "(피드백 없음)")
+            total_len = len((comment + feedback).strip())
+            if total_len < 80 or total_len > 120:
+                cols[j].caption("권장 분량: 80~120자")
+
+
 def init_session_state() -> None:
     st.session_state.setdefault("files", [])
     st.session_state.setdefault("cache", {})
