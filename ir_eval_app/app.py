@@ -106,8 +106,9 @@ PROMPT_APPENDIX = (
     "3) item_evaluations에 각 항목별 score(0-10), comment, feedback을 포함한다.\n"
     "4) strengths/weaknesses는 투자자 관점에서 엄격하게 작성한다.\n"
     "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\n"
-    "6) item_evaluations의 comment는 3~4문장, feedback은 2~3문장으로 작성하고 "
-    "가능하면 근거(숫자/지표/사실)를 함께 명시한다.\n"
+    "6) item_evaluations의 comment는 5~8문장, feedback은 4~5문장으로 작성한다. "
+    "전문 VC 메모처럼 근거(숫자/지표/사실)와 논리를 포함하고, "
+    "실행 가능한 개선 권고를 구체적으로 제시한다.\n"
     "7) Step2에는 stage_label과 industry_label을 포함한다. "
     "stage_label은 Seed/Pre-Seed/Series A/Series B+/Unknown 중 하나를 사용한다. "
     "industry_label은 SaaS/Commerce/Bio-Healthcare/DeepTech/Other 중 하나를 사용한다.\n"
@@ -649,8 +650,8 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
             cols[j].write(feedback or "(피드백 없음)")
             text = f"{comment} {feedback}".strip()
             sentences = [s for s in re.split(r"[.!?]\s+", text) if s.strip()]
-            if len(sentences) < 4:
-                cols[j].caption("권장 분량: comment 3~4문장, feedback 2~3문장")
+            if len(sentences) < 6:
+                cols[j].caption("권장 분량: comment 5~8문장, feedback 4~5문장")
 
 
 def init_session_state() -> None:
@@ -664,7 +665,20 @@ def init_session_state() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="IR Evaluator", layout="wide")
-    st.title("Title : IR 분석 & 평가")
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
+        .tight-row .stButton>button { padding: 0.35rem 0.75rem; }
+        .tight-row .stCheckbox { padding-top: 0.35rem; }
+        .table-header { font-weight: 700; color: #2b2b2b; }
+        .muted { color: #6b7280; font-size: 0.9rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.title("IR 분석 & 평가")
 
     try:
         api_key = get_api_key()
@@ -674,16 +688,22 @@ def main() -> None:
 
     init_session_state()
 
-    top_cols = st.columns([4, 1, 1, 1, 1], gap="small")
-    uploaded_files = top_cols[0].file_uploader(
-        "Google drive 폴더 ID",
-        type=["md"],
-        accept_multiple_files=True,
-    )
-    scan_clicked = top_cols[1].button("문서 스캔")
-    force_rerun = top_cols[2].checkbox("캐시 무시(재평가)", value=False)
-    refresh_clicked = top_cols[3].button("캐시 새로고침")
-    delete_cache_clicked = top_cols[4].button("캐시 삭제")
+    top_cols = st.columns([5, 1, 1, 1, 1], gap="small")
+    with top_cols[0]:
+        uploaded_files = st.file_uploader(
+            "IR Markdown 업로드 (.md)",
+            type=["md"],
+            accept_multiple_files=True,
+            label_visibility="visible",
+        )
+    with top_cols[1]:
+        scan_clicked = st.button("문서 스캔", use_container_width=True)
+    with top_cols[2]:
+        force_rerun = st.checkbox("캐시 무시(재평가)", value=False)
+    with top_cols[3]:
+        refresh_clicked = st.button("캐시 새로고침", use_container_width=True)
+    with top_cols[4]:
+        delete_cache_clicked = st.button("캐시 삭제", use_container_width=True)
 
     if refresh_clicked:
         st.session_state["status_map"] = st.session_state.get("status_map", {})
@@ -710,22 +730,23 @@ def main() -> None:
             data=excel_bytes,
             file_name=excel_filename(),
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
         )
     else:
-        table_header[1].button("엑셀 다운로드", disabled=True)
+        table_header[1].button("엑셀 다운로드", disabled=True, use_container_width=True)
 
-    search_term = st.text_input("검색(파일명/기업명)", value="")
+    search_term = st.text_input("검색(파일명/기업명)", value="", placeholder="파일명 또는 기업명")
 
-    header_cols = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1], gap="small")
-    header_cols[0].markdown("**파일명**")
-    header_cols[1].markdown("**진행**")
-    header_cols[2].markdown("**선택**")
-    header_cols[3].markdown("**기업명**")
-    header_cols[4].markdown("**critical**")
-    header_cols[5].markdown("**neutral**")
-    header_cols[6].markdown("**positive**")
-    header_cols[7].markdown("**미리보기**")
-    header_cols[8].markdown("**파일열기**")
+    header_cols = st.columns([3, 1, 0.8, 1.2, 1, 1, 1, 1, 1], gap="small")
+    header_cols[0].markdown("<div class='table-header'>파일명</div>", unsafe_allow_html=True)
+    header_cols[1].markdown("<div class='table-header'>진행</div>", unsafe_allow_html=True)
+    header_cols[2].markdown("<div class='table-header'>선택</div>", unsafe_allow_html=True)
+    header_cols[3].markdown("<div class='table-header'>기업명</div>", unsafe_allow_html=True)
+    header_cols[4].markdown("<div class='table-header'>critical</div>", unsafe_allow_html=True)
+    header_cols[5].markdown("<div class='table-header'>neutral</div>", unsafe_allow_html=True)
+    header_cols[6].markdown("<div class='table-header'>positive</div>", unsafe_allow_html=True)
+    header_cols[7].markdown("<div class='table-header'>미리보기</div>", unsafe_allow_html=True)
+    header_cols[8].markdown("<div class='table-header'>파일열기</div>", unsafe_allow_html=True)
 
     selected_ids = set(st.session_state.get("selected_file_ids", []))
     cache = st.session_state.get("cache", {})
@@ -754,10 +775,10 @@ def main() -> None:
     total_pages = max(1, (len(filtered_files) + page_size - 1) // page_size)
     page = min(st.session_state.get("page", 1), total_pages)
     pager_cols = st.columns([1, 1, 2, 1, 1], gap="small")
-    if pager_cols[0].button("이전"):
+    if pager_cols[0].button("이전", use_container_width=True):
         page = max(1, page - 1)
-    pager_cols[2].markdown(f"페이지 {page}/{total_pages}")
-    if pager_cols[4].button("다음"):
+    pager_cols[2].markdown(f"<div class='muted'>페이지 {page}/{total_pages}</div>", unsafe_allow_html=True)
+    if pager_cols[4].button("다음", use_container_width=True):
         page = min(total_pages, page + 1)
     st.session_state["page"] = page
 
@@ -768,7 +789,7 @@ def main() -> None:
         company_name = entry.get("step1", {}).get("company_name", "") if entry else ""
         scores = entry.get("perspective_scores", {}) if entry else {}
 
-        row = st.columns([3, 1, 1, 1, 1, 1, 1, 1, 1], gap="small")
+        row = st.columns([3, 1, 0.8, 1.2, 1, 1, 1, 1, 1], gap="small")
         row[0].write(f.name)
         row[1].write(status_badge(st.session_state["status_map"].get(f.name, STATUS_PENDING)))
         checked = row[2].checkbox(
@@ -793,14 +814,16 @@ def main() -> None:
             file_name=f"{f.name}.report.md",
             mime="text/markdown",
             key=f"dl_{f.name}",
+            use_container_width=True,
         )
 
     st.session_state["selected_file_ids"] = list(selected_ids)
 
-    action_cols = st.columns([6, 1, 1, 1], gap="small")
-    evaluate_selected = action_cols[1].button("선택 평가")
-    evaluate_all = action_cols[2].button("전체 평가")
-    load_history = action_cols[3].button("히스토리")
+    action_cols = st.columns([5, 1, 1, 1, 1], gap="small")
+    action_cols[0].markdown("<div class='muted'>선택 후 평가를 실행하세요.</div>", unsafe_allow_html=True)
+    evaluate_selected = action_cols[1].button("선택 평가", use_container_width=True)
+    evaluate_all = action_cols[2].button("전체 평가", use_container_width=True)
+    load_history = action_cols[3].button("히스토리", use_container_width=True)
 
     evaluator = Evaluator(api_key=api_key, semaphore=threading.Semaphore(2))
     prompt_step1 = BASE_PROMPT
