@@ -667,9 +667,9 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
                 """,
                 unsafe_allow_html=True,
             )
-            text = f"{comment} {feedback}".strip()
-            sentences = [s for s in re.split(r"[.!?]\s+", text) if s.strip()]
-            if len(sentences) < 6:
+            comment_sentences = [s for s in re.split(r"[.!?]\s+", comment or "") if s.strip()]
+            feedback_sentences = [s for s in re.split(r"[.!?]\s+", feedback or "") if s.strip()]
+            if len(comment_sentences) < 5 or len(feedback_sentences) < 4:
                 cols[j].caption("권장 분량: comment 5~8문장, feedback 4~5문장")
 
 
