@@ -114,28 +114,29 @@ PROMPT_APPENDIX = (
     "1) Step1 JSON은 반드시 스키마 힌트에 맞춰 출력한다.\n"
     "2) final_verdict는 반드시 READ NOW / WATCH / DROP 중 하나로 출력한다.\n"
     "3) logic_score는 0~92 범위로 출력하고, 93점 이상은 절대 금지한다.\n"
-    "4) 분류 기본 규칙:\n"
+    "4) item_evaluations의 comment는 5~8문장, feedback은 4~5문장으로 작성한다.\n"
+    "5) 분류 기본 규칙:\n"
     "   - READ NOW: 80~92\n"
     "   - WATCH: 70~79\n"
     "   - DROP: 0~69\n"
-    "5) 단, 예외적으로 점수가 낮아도 읽어야 할 이유가 명확하면:\n"
+    "6) 단, 예외적으로 점수가 낮아도 읽어야 할 이유가 명확하면:\n"
     "   - final_verdict를 WATCH 또는 READ NOW로 상향할 수 있다.\n"
     "   - 이 경우 exception_tag를 'LOW_SCORE_BUT_READ'로 설정한다.\n"
     "   - 상향 근거는 strengths(=Evidence)에서 특출난 준비 요소를 명확히 지목해야 한다.\n"
-    "6) recommendation_message는 final_verdict에 따라 반드시 다음 문구 중 하나로 출력한다:\n"
+    "7) recommendation_message는 final_verdict에 따라 반드시 다음 문구 중 하나로 출력한다:\n"
     "   - READ NOW: '지금 읽을 가치가 있음'\n"
     "   - WATCH: '추가 검토를 고려할 수 있음'\n"
     "   - DROP: '' (빈 문자열)\n"
-    "7) 구조화 근거 작성 규칙:\n"
+    "8) 구조화 근거 작성 규칙:\n"
     "   - strengths.* 에 Evidence(증명된 요소) 불릿을 총 3~6개 채운다.\n"
     "   - weaknesses.* 에 Gap(정보 공백/미기재) 불릿을 총 3~6개 채운다.\n"
     "   - red_flags 에 Risk(구조적/치명 리스크 신호) 불릿을 3~6개 채운다.\n"
     "   - 단, Risk는 추정이 아니라 입력 텍스트에 근거한 신호만 쓴다.\n"
-    "8) overall_summary에는 반드시 아래 구성으로 작성한다(3~7줄):\n"
+    "9) overall_summary에는 반드시 아래 구성으로 작성한다(3~7줄):\n"
     "   - 분류/점수/예외태그(해당 시)\n"
     "   - 왜 그렇게 분류했는지의 핵심 근거 요약\n"
     "   - 투자 추천/성공 가능성/확장 가능성/전망 문장은 금지\n"
-    "9) item_evaluations는 호환성을 위해 비워두지 말고, 각 항목 score=0~10과 comment/feedback을 간단히 채우되\n"
+    "10) item_evaluations는 호환성을 위해 비워두지 말고, 각 항목 score=0~10과 comment/feedback을 간단히 채우되\n"
     "   - '가능하다/기대된다/성공' 같은 전망형 문장 금지\n"
     "   - 과도한 미사여구 금지\n"
 )
@@ -168,6 +169,7 @@ BASE_PROMPT = """당신은 벤처캐피탈 내부 심사역을 보조하는 ‘I
 - 분류: READ NOW / WATCH / DROP
 - 종합 점수: XX / 100  (단, 93점 이상은 부여하지 않는다. 최대 92점)
 - 추천 메시지:
+  (item_evaluations의 comment는 5~8문장, feedback은 4~5문장으로 작성)
   - READ NOW: “지금 읽을 가치가 있음”
   - WATCH: “추가 검토를 고려할 수 있음”
   - DROP: “(표준 메시지 없이)”
