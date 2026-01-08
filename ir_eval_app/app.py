@@ -24,13 +24,17 @@ STEP1_SCHEMA_HINT = {
     "company_name": "string",
     "one_line_summary": "string",
     "overall_summary": "string (종합 평가 요약)",
-    "logic_score": "number 0-100",
-    "pass_gate": "boolean (logic_score >= 80)",
+    # ✅ 필터링 스코어: 0-92 (93점 이상 금지)
+    "logic_score": "number 0-100 (단, 93점 이상 금지. 최대 92)",
+    # ✅ 기존 필드 유지 (내부 로직/호환성)
+    "pass_gate": "boolean (logic_score >= 70 -> WATCH 이상이면 True, 80 이상이면 READ NOW)",
+    # ✅ 기존 필드 유지
     "perspective_scores": {
         "critical": "number 0-100",
         "neutral": "number 0-100",
         "positive": "number 0-100",
     },
+    # ✅ 기존 필드 유지 (report_writer 등 호환성 대비)
     "item_evaluations": {
         "문제정의": {"score": "number 0-10", "comment": "string", "feedback": "string"},
         "솔루션&제품": {"score": "number 0-10", "comment": "string", "feedback": "string"},
@@ -42,9 +46,14 @@ STEP1_SCHEMA_HINT = {
         "재무계획": {"score": "number 0-10", "comment": "string", "feedback": "string"},
     },
     "item_scores": {"market": "number 0-10", "team": "number 0-10", "product": "number 0-10"},
+    # ✅ 구조화 근거를 기존 strengths/weaknesses/red_flags로 매핑할 수 있도록 유지
     "strengths": {"market": "list[str]", "team": "list[str]", "product": "list[str]"},
     "weaknesses": {"market": "list[str]", "team": "list[str]", "product": "list[str]"},
     "red_flags": "list[str]",
+    # ✅ NEW: 최종 분류(READ NOW/WATCH/DROP) 및 예외 태그(LOW_SCORE_BUT_READ)
+    "final_verdict": "string (READ NOW/WATCH/DROP)",
+    "exception_tag": "string (LOW_SCORE_BUT_READ or empty)",
+    "recommendation_message": "string (READ NOW/WATCH/DROP에 따른 메시지)",
     "cost_estimate": {"llm_calls": "number", "tokens": "number", "usd": "number"},
 }
 
@@ -98,179 +107,163 @@ ITEM_KEYS = [
     "재무계획",
 ]
 
+# ✅ PROMPT_APPENDIX는 “기존 Step1/Step2 평가 지시” 대신,
+#    “Step1 결과(JSON)에 필터링 분류/구조화 근거를 정확히 채우도록”만 보조한다.
 PROMPT_APPENDIX = (
     "추가 지시사항:\n"
-    "1) Step1/Step2 JSON은 반드시 스키마 힌트에 맞춰 출력한다.\n"
-    "2) 항목별 평가는 다음 항목으로 고정한다: "
-    "문제정의, 솔루션&제품, 시장규모&분석, 비즈니스모델, 경쟁분석, 성장전략, 주요 인력&팀, 재무계획.\n"
-    "3) item_evaluations에 각 항목별 score(0-10), comment, feedback을 포함한다.\n"
-    "4) strengths/weaknesses는 투자자 관점에서 엄격하게 작성한다.\n"
-    "5) overall_summary(종합 평가 요약)를 반드시 포함한다.\n"
-    "6) item_evaluations의 comment는 5~8문장, feedback은 4~5문장으로 작성한다. "
-    "전문 VC 메모처럼 근거(숫자/지표/사실)와 논리를 포함하고, "
-    "실행 가능한 개선 권고를 구체적으로 제시한다.\n"
-    "7) Step2에는 stage_label과 industry_label을 포함한다. "
-    "stage_label은 Seed/Pre-Seed/Series A/Series B+/Unknown 중 하나를 사용한다. "
-    "industry_label은 SaaS/Commerce/Bio-Healthcare/DeepTech/Other 중 하나를 사용한다.\n"
-    "8) 점수 산정은 논리성과 근거 수준에 따라 보수적으로 부여하되, "
-    "관점별 차이가 드러나도록 작성한다.\n"
+    "1) Step1 JSON은 반드시 스키마 힌트에 맞춰 출력한다.\n"
+    "2) final_verdict는 반드시 READ NOW / WATCH / DROP 중 하나로 출력한다.\n"
+    "3) logic_score는 0~92 범위로 출력하고, 93점 이상은 절대 금지한다.\n"
+    "4) 분류 기본 규칙:\n"
+    "   - READ NOW: 80~92\n"
+    "   - WATCH: 70~79\n"
+    "   - DROP: 0~69\n"
+    "5) 단, 예외적으로 점수가 낮아도 읽어야 할 이유가 명확하면:\n"
+    "   - final_verdict를 WATCH 또는 READ NOW로 상향할 수 있다.\n"
+    "   - 이 경우 exception_tag를 'LOW_SCORE_BUT_READ'로 설정한다.\n"
+    "   - 상향 근거는 strengths(=Evidence)에서 특출난 준비 요소를 명확히 지목해야 한다.\n"
+    "6) recommendation_message는 final_verdict에 따라 반드시 다음 문구 중 하나로 출력한다:\n"
+    "   - READ NOW: '지금 읽을 가치가 있음'\n"
+    "   - WATCH: '추가 검토를 고려할 수 있음'\n"
+    "   - DROP: '' (빈 문자열)\n"
+    "7) 구조화 근거 작성 규칙:\n"
+    "   - strengths.* 에 Evidence(증명된 요소) 불릿을 총 3~6개 채운다.\n"
+    "   - weaknesses.* 에 Gap(정보 공백/미기재) 불릿을 총 3~6개 채운다.\n"
+    "   - red_flags 에 Risk(구조적/치명 리스크 신호) 불릿을 3~6개 채운다.\n"
+    "   - 단, Risk는 추정이 아니라 입력 텍스트에 근거한 신호만 쓴다.\n"
+    "8) overall_summary에는 반드시 아래 구성으로 작성한다(3~7줄):\n"
+    "   - 분류/점수/예외태그(해당 시)\n"
+    "   - 왜 그렇게 분류했는지의 핵심 근거 요약\n"
+    "   - 투자 추천/성공 가능성/확장 가능성/전망 문장은 금지\n"
+    "9) item_evaluations는 호환성을 위해 비워두지 말고, 각 항목 score=0~10과 comment/feedback을 간단히 채우되\n"
+    "   - '가능하다/기대된다/성공' 같은 전망형 문장 금지\n"
+    "   - 과도한 미사여구 금지\n"
 )
 
-BASE_PROMPT = """# ROLE (FIXED)
+# ✅ BASE_PROMPT를 “설명문 기반 2단계 필터링 평가 프롬프트”로 교체
+#    (요약/축약 없이 그대로 삽입)
+BASE_PROMPT = """당신은 벤처캐피탈 내부 심사역을 보조하는 ‘IR 필터링(선별) 심사역’이다.
+입력으로 주어지는 텍스트는 “IR PDF를 사실 중심으로 변환한 설명문(Markdown)”이며,
+당신의 목적은 투자 결정을 대신하는 것이 아니라, 사람이 시간을 들여 읽어야 할 IR인지 여부를
+“READ NOW / WATCH / DROP”으로 분류하고, 그 근거를 구조화하여 제공하는 것이다.
 
-너는 실리콘밸리에서 가장 까다롭기로 유명한 시니어 투자 심사역이다. IR 자료에 나오는 감성적인 호소나 미려한 문구에 현혹되지 마라. 모든 주장에 대해 '그게 진짜야?(Is it true?)', '그래서 어쩌라고?(So what?)', '너네만 할 수 있어?(Why you?)'라는 세 가지 관점에서 비판적으로 검토한 뒤, 매우 보수적인 점수를 부여해라.
-너는 이 사업이 안 될 이유를 찾는 비관적인 심사역이다. 화려한 수식어는 무시하고, 오직 **입증된 데이터(Evidence-backed Data)**와 인과관계의 엄격함만 믿는다
+이 평가는 ‘좋은 팀을 칭찬’하거나 ‘성공 가능성을 예측’하는 작업이 아니다.
+당신은 아래 기준에 따라, “지금 읽어야 할 가치가 있는 IR인지”를 추천하는 역할만 수행한다.
 
+────────────────────────────────────────────────────────────────────────
+0) 입력 데이터 원칙 (Source-of-truth)
+────────────────────────────────────────────────────────────────────────
+- 입력(설명문)에 포함된 내용만 근거로 사용한다.
+- 입력에 없는 내용은 생성/추정/보완하지 않는다.
+- 외부 정보/시장 데이터 인용은 금지한다. (이 단계에서는 입력 텍스트만 사용)
+- 문구가 모호하면 “불명확/근거 부족/미기재”로 처리한다.
+- “회사/제품/서비스 고유명사”는 입력에 등장하는 표기를 그대로 사용한다.
 
-IR 자료에 나오는 감성적 호소, 미려한 문구, 비전 중심 수식어에는 절대 현혹되지 마라.
-모든 주장에 대해 반드시 아래 3가지 질문으로만 판단한다.
+────────────────────────────────────────────────────────────────────────
+1) 평가 목표 (What you must output)
+────────────────────────────────────────────────────────────────────────
+당신의 출력은 아래를 반드시 포함한다.
 
-1) Is it true?  → 입증된 데이터가 있는가
-2) So what?     → 투자자에게 의미 있는가
-3) Why you?     → 왜 이 팀만 가능한가
+[결론]
+- 분류: READ NOW / WATCH / DROP
+- 종합 점수: XX / 100  (단, 93점 이상은 부여하지 않는다. 최대 92점)
+- 추천 메시지:
+  - READ NOW: “지금 읽을 가치가 있음”
+  - WATCH: “추가 검토를 고려할 수 있음”
+  - DROP: “(표준 메시지 없이)”
+- 예외 태그(선택): “LOW_SCORE_BUT_READ” (점수는 낮지만 읽어야 할 이유가 있을 때만)
 
-입증되지 않은 주장은 가설로 간주하고 감점하라.
-논리적 비약은 관리되지 않으면 강하게 감점하라.
-너는 비관적인 심사역이며, 오직 Evidence-backed Data와 인과관계의 엄격함만 신뢰한다.
+[근거 요약]
+- Evidence (증명된 요소)
+- Gap (정보 공백)
+- Risk (구조적 리스크)
 
----
+[판단 근거 요약]
+- 3~7줄로, 왜 그렇게 분류했는지 설명한다.
+- 단, “투자 추천/매력도/성공 가능성” 판단은 하지 않는다.
+- “~할 수 있다/기대된다/가능하다” 같은 가능성·전망 문장은 쓰지 않는다.
+- “좋은 팀/우수한 팀/A급” 같은 정성적 칭찬은 쓰지 않는다.
 
-# CONSTITUTION (ABSOLUTE)
+────────────────────────────────────────────────────────────────────────
+2) 분류 기준 (Classification policy)
+────────────────────────────────────────────────────────────────────────
+기본 분류는 점수에 의해 결정된다.
 
-아래 제공되는 “IR 평가 기준 문서”를 하나의 헌법처럼 절대적으로 따른다.
-임의로 해석을 확장하거나 기준을 완화하지 않는다.
+- READ NOW: 80 ~ 92점
+- WATCH: 70 ~ 79점
+- DROP: 0 ~ 69점
+- 93점 이상은 부여 금지 (최대 92점)
 
----
+단, 예외적으로 점수와 분류가 다를 수 있다.
+이 예외는 “점수는 낮지만 특정 항목이 매우 강하게 준비되어 있어 사람이 시간을 들여 읽을 이유가 명확한 경우”에만 허용한다.
 
-# HARD RULES (NON-NEGOTIABLE)
+예외 규칙:
+- 점수가 70점 미만이더라도, 아래 조건을 만족하면 분류를 WATCH 또는 READ NOW로 상향할 수 있다.
+- 단, 이 경우 반드시 예외 태그 “LOW_SCORE_BUT_READ”를 [결론]에 추가한다.
+- 상향의 근거는 Evidence 항목에서 “특출난 준비 요소”를 명확히 지목해야 한다.
+- 상향은 ‘정보 부족’ 때문이 아니라 ‘강한 증거/검증’ 때문에만 허용한다.
 
-1. 출력은 JSON과 마크다운파일로 하고 미리보기 출력한다.
-2. JSON은 지정된 스키마와 정확히 일치해야 한다.
-3. 강점/약점은 반드시 투자자 관점에서 작성한다.
-4. 점수는 냉정하게 부여하며, 의심되는 지점마다 깎는다.
+허용되는 상향의 대표 조건(예시):
+- 강한 실증/검증 데이터가 입력에 명확히 존재 (PoC/실제 운영 지표/반복 측정 지표 등)
+- 유닛 이코노믹스의 핵심 수치가 구체적이며 논리적 연결이 깨지지 않음
+- 시장/고객/문제-솔루션 정합성이 구체적이고 내부 논리 공백이 매우 적음
+(※ 위는 예시이며, 반드시 입력에 명시된 근거로만 판단)
 
----
+────────────────────────────────────────────────────────────────────────
+3) 점수 산정 (Scoring rubric: B+C 혼합)
+────────────────────────────────────────────────────────────────────────
+종합 점수는 “IR 완성도/검증 수준(B)”과 “읽을 우선순위(C)”를 혼합한다.
+단, 투자 매력도 점수가 아니다. “읽을 가치”의 객관화 지표다.
 
-# INPUT SCOPE
+아래 5개 축을 각각 0~20점으로 평가하고, 합산하여 0~100을 만든 뒤, 최종 점수는 92를 상한으로 캡한다.
 
-- 입력: IR full-text Markdown (.md)
+(1) Evidence Strength (0~20)
+- 입력에서 확인되는 검증/실측/성과/지표의 구체성, 측정 방법의 명료성, 반복/추세 데이터 존재 여부
 
----
+(2) Problem–Solution Clarity (0~20)
+- 문제 정의의 구체성, 고객/상황의 명확성, 솔루션이 문제와 직접 연결되는지, 설명의 모호성 여부
 
-# OVERALL GOAL
+(3) Business Model & Unit Economics Clarity (0~20)
+- 수익 구조, 가격/과금 기준, 비용 구조, 핵심 지표(LTV/CAC 등)의 논리적 일관성
+- 수치가 있는데 근거/정의가 없으면 감점
 
-“이 회사는 논리적으로 설득되며,
-해당 산업 × 투자단계 × 비즈니스모델 조건에서
-평균 대비 우수한가?”
+(4) Market & Customer Grounding (0~20)
+- 타깃 고객/시장 범위가 구체적인지, 시장 정의가 비약적이지 않은지,
+- 고객 획득/세그먼트/채널이 설명되는지
 
----
+(5) Execution Readiness (0~20)
+- 실행 계획/로드맵/조직/운영의 구체성, 현실적인 단계 설정,
+- “누가/무엇을/언제/어떻게”가 입력에 드러나는 정도
 
-## [STAGE 1] IR 논리성·충실성 평가 (GATE / ABSOLUTE)
+각 축 점수는 근거가 있는 항목만 올릴 수 있다.
+입력에 없는 정보는 “없음/미기재”로 처리하고 해당 축에서 감점한다.
 
-- 총점: 0–100
-- 컷트라인: **80점**
-- 80점 미만이면:
-  → 즉시 미팅 판단 = NO
-  → STAGE 2는 수행하지 않는다.
+최종 점수 계산:
+- raw_score = (1)+(2)+(3)+(4)+(5)  (0~100)
+- final_score = min(raw_score, 92)  (상한 92점)
 
-### STAGE 1 핵심 철학
-“이 IR은 투자자를 설득할 논리 구조를 갖추었는가?”
+────────────────────────────────────────────────────────────────────────
+4) Evidence / Gap / Risk 작성 규칙 (구조화 근거)
+────────────────────────────────────────────────────────────────────────
+- Evidence: 입력에서 “검증된 사실/지표/성과/실험”을 중심으로 쓴다. (3~6개)
+- Gap: 입력에서 “명시되지 않은 핵심 정보/정의/근거/수치/방법”을 쓴다. (3~6개)
+- Risk: 입력에서 드러난 “구조적 리스크/치명 리스크/일관성 붕괴/규제·데이터 이슈 미기재” 등을 쓴다. (3~6개)
+  - 단, Risk는 추정이 아니라 “입력에 근거한 리스크 신호”만 적는다.
+  - 예: “개인정보/부정사용 방지에 대한 설명이 미기재됨”은 가능
+  - 예: “개인정보 이슈로 큰일 난다” 같은 예측은 금지
 
-### 보수적 감점 규칙 (반드시 적용)
-- ‘혁신적’, ‘세계 최초’ 등 추상적 형용사 남발 → 논리 모호성으로 감점
-- TAM만 키우고 SOM(실제 해결 가능 범위)이 불명확 → 감점
-- 주장과 데이터가 1:1로 매칭되지 않음 → 허위 논리로 간주
+────────────────────────────────────────────────────────────────────────
+5) 금지 사항 (Hard bans)
+────────────────────────────────────────────────────────────────────────
+- 입력에 없는 내용 생성/추정/보완 금지
+- 외부 데이터/시장 자료 인용 금지
+- 투자 권유/추천/매력도 판단 금지
+- 성공 가능성/확장 가능성/미래 전망 서술 금지
+- 과도한 수식어/감정적 표현/칭찬형 표현 금지
+- “가능하다/기대된다/열려 있다” 등 전망형 문장 금지
 
-### STAGE 1 평가 관점
-다음 요소를 논리적 역할 중심으로 평가한다.
-- 문제 정의가 누구에게, 왜, 얼마나 중요한지 구체적인가
-- 문제 → 솔루션 연결이 기능 나열이 아닌 해결 메커니즘인가
-- 주장 → 근거 → 결론이 1:1로 연결되는가
-- 논리적 비약이 존재하는가, 있다면 인식·관리되는가
-- 스토리 흐름이 일관적인가 (Problem → Solution → Market → BM → Growth)
-- 투자자 질문(Why now / Why you / Why this way)을 선제적으로 답하는가
-- 핵심 메시지가 응집되어 한 문장으로 요약 가능한가
-
----
-
-## [STAGE 2] 산업 × 투자단계 × 비즈니스모델 적합성 평가 (RELATIVE / BONUS)
-
-STAGE 1을 통과한 기업만 수행한다.
-
-- 투자단계 적합성: 0–10
-- 산업 적합성: 0–10
-- 비즈니스모델 적합성: 0–10
-- 총점: 0–30
-- 기준점(평균): 5점
-
-
----
-
-### STAGE 2 공통 점수 해석
-- 8–10점: 명확히 우수 (벤치마크 상회 Hard Data)
-- 5–7점: 평균 수준 (가설은 합리적이나 검증 시계열 부족)
-- 0–4점: 미달 (해당 조건에서 당연히 있어야 할 증거 누락)
-
----
-
-### [A] 투자 단계별 기대 증거
-
-#### Seed / Pre-Seed
-핵심 질문:
-“근거 없는 자신감인가, 아니면 돈이 되는 비밀(Earned Secret)을 알고 있는가?”
-
-필수 증거(없으면 3점 이하):
-- Earned Secret (현장에서만 얻은 문제 인사이트)
-- Founder-Market Fit
-- 소수라도 열광하는 초기 사용자 신호
-
----
-
-#### Series A
-핵심 질문:
-“마케팅비로 만든 가짜 성장이 아닌가?”
-
-필수 증거(없으면 3점 이하):
-- LTV/CAC ≥ 3
-- 코호트 기반 리텐션
-- GTM 효율의 시계열 개선
-
----
-
-#### Series B+
-핵심 질문:
-“규모가 커질수록 이익도 커지는가?”
-
-필수 증거(없으면 3점 이하):
-- NRR ≥ 110%
-- 운영 레버리지 존재
-- 구조적 모트
-
----
-
-### [B] 산업별 보수적 잣대
-
-#### SaaS / 기술 / 플랫폼
-- Churn < 3%
-- CAC Payback < 8~12개월
-- 자체 데이터/엔진 여부
-
-#### 커머스 / 마켓플레이스
-- CM2 흑자 여부
-- 3개월 재구매율 업계 평균 대비 1.5배
-
-#### 바이오 / 헬스케어 / 딥테크
-- 규제/급여 로드맵 명확성
-- 비교 임상/실험 데이터
-
----
-
-### [C] 비즈니스모델별 핵심 판단
-- 구독형: 리텐션, NRR, 단위경제성
-- 거래형: GMV × 빈도 × 마진
-- 광고형: 참여도, ARPU, 네트워크 효과
-- 라이선스: 계약 구조, 마일스톤
-- 하드웨어: 원가, 마진, 스케일 구조
+────────────────────────────────────────────────────────────────────────
+이제 입력으로 제공되는 “IR 설명문(Markdown)”만을 근거로 Step1 JSON을 스키마에 맞춰 작성하라.
 """
 
 
@@ -423,32 +416,20 @@ def _weighted_item_score(step1: Dict[str, Any], step2: Optional[Dict[str, Any]])
 
 
 def compute_perspective_scores(step1: Dict[str, Any], step2: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    # ✅ 필터링 목적: logic_score(0~92)를 핵심 점수로 사용
+    # 기존 UI/엑셀 구조를 유지하기 위해 critical/neutral/positive를 동일 점수로 세팅
     logic_score = float(step1.get("logic_score", 0) or 0)
-    if step2:
-        stage = float(step2.get("stage_score", 0) or 0)
-        industry = float(step2.get("industry_score", 0) or 0)
-        bm = float(step2.get("bm_score", 0) or 0)
-        normalized_step2 = (stage + industry + bm) / 30.0 * 100.0
-    else:
-        normalized_step2 = 0.0
-    weighted_items = _weighted_item_score(step1, step2)
-    base = 0.5 * logic_score + 0.3 * weighted_items + 0.2 * normalized_step2
-    critical = base - 6
-    neutral = base
-    positive = base + 6
-    return {
-        "critical": min(92, int(round(max(0, critical)))),
-        "neutral": min(92, int(round(max(0, neutral)))),
-        "positive": min(92, int(round(max(0, positive)))),
-    }
+    s = min(92, int(round(max(0, logic_score))))
+    return {"critical": s, "neutral": s, "positive": s}
 
 
 def recommendation_for(score: int) -> str:
+    # ✅ 메시지 규칙(요청 반영)
     if score >= 80:
-        return "추천"
+        return "지금 읽을 가치가 있음"
     if score >= 70:
-        return "조건부 권장"
-    return "보류"
+        return "추가 검토를 고려할 수 있음"
+    return ""
 
 
 def derive_recommendations(scores: Dict[str, int]) -> Dict[str, str]:
@@ -482,21 +463,40 @@ def evaluate_one(
         prompt_step1=f"{BASE_PROMPT}\n\n{PROMPT_APPENDIX}",
         schema_hint_step1=to_json(STEP1_SCHEMA_HINT),
     )
-    logic_score = float(step1_json.get("logic_score", 0) or 0)
-    step1_json["pass_gate"] = logic_score >= 80
 
+    # ✅ 점수(0~92) 및 분류 우선 적용
+    logic_score = float(step1_json.get("logic_score", 0) or 0)
+    logic_score = min(92.0, max(0.0, logic_score))
+    step1_json["logic_score"] = logic_score
+
+    # ✅ 기본 분류 규칙 (단, 모델이 final_verdict를 명시하면 그것을 우선 신뢰)
+    model_verdict = str(step1_json.get("final_verdict", "") or "").strip()
+    if model_verdict in ("READ NOW", "WATCH", "DROP"):
+        final_verdict = model_verdict
+    else:
+        if logic_score >= 80:
+            final_verdict = "READ NOW"
+        elif logic_score >= 70:
+            final_verdict = "WATCH"
+        else:
+            final_verdict = "DROP"
+        step1_json["final_verdict"] = final_verdict
+
+    # ✅ pass_gate는 WATCH 이상(>=70)이면 True로 설정 (기존 로직 호환)
+    step1_json["pass_gate"] = logic_score >= 70
+
+    # Step2는 원칙적으로 필터링에는 불필요하나, 호환성을 위해 형태는 유지
     step2_json: Optional[Dict[str, Any]] = None
-    if step1_json.get("pass_gate", False):
-        step2_json = evaluator.evaluate_step2(
-            content=content,
-            prompt_step2=f"{BASE_PROMPT}\n\n{PROMPT_APPENDIX}",
-            schema_hint_step2=to_json(STEP2_SCHEMA_HINT),
-            step1_json=step1_json,
-        )
+    # 기존: if step1_json.get("pass_gate", False):
+    # 지금은 필터링 목적상 Step2를 돌리지 않는 것을 기본으로 한다.
+    # (필요하면 추후 옵션으로 켤 수 있음)
 
     scores = compute_perspective_scores(step1_json, step2_json)
     recommendations = derive_recommendations(scores)
-    final_verdict = recommendations.get("critical", "보류")
+
+    # ✅ 화면/엑셀에 보일 verdict는 Step1의 final_verdict를 사용
+    final_verdict = step1_json.get("final_verdict", final_verdict)
+
     report_md = render_report(
         file_name,
         step1_json,
