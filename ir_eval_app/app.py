@@ -623,15 +623,27 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
     scores = entry.get("perspective_scores", {})
     company_name = step1.get("company_name") or "기업명 미상"
     st.markdown(
-        f"#리포트 제목 : {company_name}  \n"
-        f"Critical : {scores.get('critical','')}   "
-        f"Neutral : {scores.get('neutral','')}   "
-        f"Positive : {scores.get('positive','')}"
+        f"""
+        <div class="preview-card">
+          <div class="preview-title">리포트 제목 : {company_name}</div>
+          <div class="preview-sub">Critical : {scores.get('critical','')} &nbsp;&nbsp;
+          Neutral : {scores.get('neutral','')} &nbsp;&nbsp;
+          Positive : {scores.get('positive','')}</div>
+          <div style="margin-top:0.6rem;">{step1.get("one_line_summary", "")}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    st.markdown(step1.get("one_line_summary", ""))
 
-    st.markdown("### Title : 종합 평가")
-    st.info(step1.get("overall_summary", "(없음)"))
+    st.markdown(
+        f"""
+        <div class="preview-card">
+          <div class="preview-title">Title : 종합 평가</div>
+          <div>{step1.get("overall_summary", "(없음)")}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     item_evaluations = step1.get("item_evaluations", {})
     if not item_evaluations:
@@ -645,9 +657,16 @@ def render_preview_panel(entry: Optional[Dict[str, Any]]) -> None:
             value = item_evaluations.get(key, {})
             comment = value.get("comment", "")
             feedback = value.get("feedback", "")
-            cols[j].markdown(f"**Title : {key}**")
-            cols[j].write(comment or "(코멘트 없음)")
-            cols[j].write(feedback or "(피드백 없음)")
+            cols[j].markdown(
+                f"""
+                <div class="preview-card">
+                  <div class="preview-title">Title : {key}</div>
+                  <div>{comment or "(코멘트 없음)"}</div>
+                  <div style="margin-top:0.5rem;">{feedback or "(피드백 없음)"}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             text = f"{comment} {feedback}".strip()
             sentences = [s for s in re.split(r"[.!?]\s+", text) if s.strip()]
             if len(sentences) < 6:
@@ -668,11 +687,24 @@ def main() -> None:
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 1.5rem; padding-bottom: 2rem; }
-        .tight-row .stButton>button { padding: 0.35rem 0.75rem; }
-        .tight-row .stCheckbox { padding-top: 0.35rem; }
-        .table-header { font-weight: 700; color: #2b2b2b; }
-        .muted { color: #6b7280; font-size: 0.9rem; }
+        .block-container { padding-top: 1.2rem; padding-bottom: 1.6rem; }
+        .table-header { font-weight: 700; color: #2b2b2b; font-size: 0.95rem; }
+        .muted { color: #6b7280; font-size: 0.85rem; }
+        .compact .stButton>button { padding: 0.25rem 0.6rem; font-size: 0.85rem; }
+        .compact .stCheckbox { padding-top: 0.2rem; }
+        .compact .stTextInput>div>div>input { height: 2rem; }
+        .compact .stFileUploader { padding-bottom: 0.2rem; }
+        .compact .stMarkdown { margin-bottom: 0.15rem; }
+        .row-compact { font-size: 0.88rem; }
+        .preview-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 0.8rem 0.9rem;
+            background: #fafafa;
+            margin-bottom: 0.7rem;
+        }
+        .preview-title { font-weight: 700; margin-bottom: 0.4rem; }
+        .preview-sub { color: #6b7280; font-size: 0.85rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -688,6 +720,7 @@ def main() -> None:
 
     init_session_state()
 
+    st.markdown("<div class='compact'>", unsafe_allow_html=True)
     top_cols = st.columns([5, 1, 1, 1, 1], gap="small")
     with top_cols[0]:
         uploaded_files = st.file_uploader(
@@ -704,6 +737,7 @@ def main() -> None:
         refresh_clicked = st.button("캐시 새로고침", use_container_width=True)
     with top_cols[4]:
         delete_cache_clicked = st.button("캐시 삭제", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if refresh_clicked:
         st.session_state["status_map"] = st.session_state.get("status_map", {})
@@ -735,7 +769,9 @@ def main() -> None:
     else:
         table_header[1].button("엑셀 다운로드", disabled=True, use_container_width=True)
 
+    st.markdown("<div class='compact'>", unsafe_allow_html=True)
     search_term = st.text_input("검색(파일명/기업명)", value="", placeholder="파일명 또는 기업명")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     header_cols = st.columns([3, 1, 0.8, 1.2, 1, 1, 1, 1, 1], gap="small")
     header_cols[0].markdown("<div class='table-header'>파일명</div>", unsafe_allow_html=True)
@@ -790,8 +826,11 @@ def main() -> None:
         scores = entry.get("perspective_scores", {}) if entry else {}
 
         row = st.columns([3, 1, 0.8, 1.2, 1, 1, 1, 1, 1], gap="small")
-        row[0].write(f.name)
-        row[1].write(status_badge(st.session_state["status_map"].get(f.name, STATUS_PENDING)))
+        row[0].markdown(f"<div class='row-compact'>{f.name}</div>", unsafe_allow_html=True)
+        row[1].markdown(
+            f"<div class='row-compact'>{status_badge(st.session_state['status_map'].get(f.name, STATUS_PENDING))}</div>",
+            unsafe_allow_html=True,
+        )
         checked = row[2].checkbox(
             "",
             value=f.name in selected_ids,
@@ -801,10 +840,10 @@ def main() -> None:
             selected_ids.add(f.name)
         else:
             selected_ids.discard(f.name)
-        row[3].write(company_name)
-        row[4].write(scores.get("critical", ""))
-        row[5].write(scores.get("neutral", ""))
-        row[6].write(scores.get("positive", ""))
+        row[3].markdown(f"<div class='row-compact'>{company_name}</div>", unsafe_allow_html=True)
+        row[4].markdown(f"<div class='row-compact'>{scores.get('critical', '')}</div>", unsafe_allow_html=True)
+        row[5].markdown(f"<div class='row-compact'>{scores.get('neutral', '')}</div>", unsafe_allow_html=True)
+        row[6].markdown(f"<div class='row-compact'>{scores.get('positive', '')}</div>", unsafe_allow_html=True)
         if row[7].button("보기", key=f"preview_{f.name}") and entry:
             st.session_state["selected_file_name"] = f.name
         report_text = entry.get("report_md", "") if entry else ""
@@ -819,11 +858,13 @@ def main() -> None:
 
     st.session_state["selected_file_ids"] = list(selected_ids)
 
+    st.markdown("<div class='compact'>", unsafe_allow_html=True)
     action_cols = st.columns([5, 1, 1, 1, 1], gap="small")
     action_cols[0].markdown("<div class='muted'>선택 후 평가를 실행하세요.</div>", unsafe_allow_html=True)
     evaluate_selected = action_cols[1].button("선택 평가", use_container_width=True)
     evaluate_all = action_cols[2].button("전체 평가", use_container_width=True)
     load_history = action_cols[3].button("히스토리", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     evaluator = Evaluator(api_key=api_key, semaphore=threading.Semaphore(2))
     prompt_step1 = BASE_PROMPT
